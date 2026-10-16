@@ -1,0 +1,23 @@
+{
+  // Snicksnack-mottagaren. Byt database_id mot id:t från `wrangler d1 create` innan du deployar.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "snicksnack-mottagare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Största kropp i byte. Workers tar högst 100 MB på gratis- och Pro-planen.
+    "MAX_BYTES": "104857600"
+  },
+  "r2_buckets": [
+    { "binding": "FILER", "bucket_name": "snicksnack-mottagare" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "snicksnack-mottagare",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
