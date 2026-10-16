@@ -1,6 +1,6 @@
 # Snicksnack-mottagare
 
-En öppen referensmottagare för [Snicksnack](https://snicksnack.applicerad.ai), iOS-appen som gör tal till text på
+En öppen referensmottagare för Snicksnack, iOS-appen som gör tal till text på
 telefonen. Mottagaren är en Cloudflare Worker som tar emot snack (transkript, text och ljud) som skickas från appen
 och sparar dem på ditt eget Cloudflare-konto. Den går att köra på gratisplanen.
 
