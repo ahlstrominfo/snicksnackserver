@@ -1,4 +1,5 @@
-// Admin på /admin: inställningar, mål, avsändare och mottagna snack. Enkel HTML direkt från Workern.
+// Admin på /admin: inställningar, mål, avsändare och mottagna snack. Enkel HTML direkt från Workern;
+// utseendet (färger, typsnitt, loggan) ligger i utseende.ts.
 
 import qrcode from "qrcode-generator";
 import {
@@ -19,6 +20,7 @@ import { html, htmlSvar, raw, type Raw } from "./html";
 import { giltigSession, läsCookie, nyNyckel, rättLösenord, sha256Hex, skapaSession, SESSION_DAGAR } from "./krypto";
 import { IKON_NYCKEL, ikonversion } from "./protokoll";
 import { adminAi, allaPrompter, promptVal, sättPrompterFörAvsändare } from "./admin-ai";
+import { FAVICON, fältrad, logga, rubrik, SKRIPT, STIL, tomt, valgrupp, växel } from "./utseende";
 
 const COOKIE = "snicksnack_admin";
 const STANDARDFÄRG = "#E27B48";
@@ -41,9 +43,11 @@ export async function admin(req: Request, env: Env): Promise<Response> {
       sida(
         null,
         "Lösenord saknas",
-        html`<p>Sätt ett lösenord för admin först:</p>
-          <pre>npx wrangler secret put ADMIN_PASSWORD</pre>
-          <p>Lokalt med <code>wrangler dev</code>: lägg <code>ADMIN_PASSWORD=…</code> i <code>.dev.vars</code>.</p>`,
+        html`${rubrik("Lösenord saknas", "Sätt ett lösenord för admin först.")}
+          <div class="kort">
+            <p><code>npx wrangler secret put ADMIN_PASSWORD</code></p>
+            <p class="tips">Lokalt med <code>wrangler dev</code>: lägg <code>ADMIN_PASSWORD=…</code> i <code>.dev.vars</code>.</p>
+          </div>`,
       ),
       503,
     );
@@ -52,7 +56,7 @@ export async function admin(req: Request, env: Env): Promise<Response> {
   // Formulär får bara postas från den egna sidan (skydd mot CSRF utöver SameSite på cookien).
   if (req.method === "POST") {
     const ursprung = req.headers.get("Origin");
-    if (ursprung && ursprung !== url.origin) return htmlSvar(sida(null, "Nekad", html`<p>Fel ursprung.</p>`), 403);
+    if (ursprung && ursprung !== url.origin) return htmlSvar(sida(null, "Nekad", rubrik("Nekad", "Formuläret kom från en annan sida.")), 403);
   }
 
   if (väg === "/admin/login") return req.method === "POST" ? loggaIn(req, env, url) : loginSida(url);
@@ -62,7 +66,7 @@ export async function admin(req: Request, env: Env): Promise<Response> {
 
   if (!(await giltigSession(lösen, läsCookie(req, COOKIE)))) {
     if (req.method === "GET") return omdirigera(`/admin/login?next=${encodeURIComponent(url.pathname + url.search)}`);
-    return htmlSvar(sida(null, "Inte inloggad", html`<p><a href="/admin/login">Logga in</a></p>`), 401);
+    return htmlSvar(sida(null, "Inte inloggad", html`${rubrik("Inte inloggad")}<p><a class="knapp" href="/admin/login">Logga in</a></p>`), 401);
   }
 
   let delar: string[];
@@ -131,7 +135,7 @@ export function omdirigera(till: string, huvuden: Record<string, string> = {}): 
 export const medMeddelande = (väg: string, text: string) => omdirigera(`${väg}?meddelande=${encodeURIComponent(text)}`);
 
 async function inteFunnen(env: Env, s?: Inställningar): Promise<Response> {
-  return htmlSvar(sida(s ?? (await hämtaInställningar(env.DB)), "Finns inte", html`<p>Sidan finns inte.</p>`), 404);
+  return htmlSvar(sida(s ?? (await hämtaInställningar(env.DB)), "Finns inte", html`${rubrik("Finns inte")}${tomt("Här finns inget. Kanske är det borttaget?")}`), 404);
 }
 
 const vägTill = (...delar: string[]) => "/" + delar.map(encodeURIComponent).join("/");
@@ -150,6 +154,33 @@ function längd(sek: number | null): string {
 function inspelad(iso: string | null): string {
   const m = iso && /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso);
   return m ? `${m[1]} ${m[2]}` : (iso ?? "–");
+}
+
+/** recorded_at som "lör 10 okt. 09:30" (med år om det inte är i år). */
+function inspeladLång(iso: string | null): string {
+  const m = iso && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(iso);
+  if (!m) return inspelad(iso);
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const år = +m[1] !== new Date().getUTCFullYear();
+  const dag = d.toLocaleDateString("sv-SE", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", ...(år ? { year: "numeric" } : {}) });
+  return `${dag} ${m[4]}`;
+}
+
+const STOCKHOLM = "Europe/Stockholm";
+const dagnyckel = (d: string | Date) => new Date(d).toLocaleDateString("sv-SE", { timeZone: STOCKHOLM });
+const klocka = (iso: string) => new Date(iso).toLocaleTimeString("sv-SE", { timeZone: STOCKHOLM, hour: "2-digit", minute: "2-digit" });
+
+/** "Idag", "Igår" eller "Torsdag 8 oktober". */
+function dagnamn(nyckel: string): string {
+  if (nyckel === dagnyckel(new Date())) return "Idag";
+  if (nyckel === dagnyckel(new Date(Date.now() - 86400_000))) return "Igår";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(nyckel);
+  if (!m) return nyckel;
+  const år = +m[1] !== new Date().getUTCFullYear();
+  const t = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString("sv-SE", {
+    timeZone: "UTC", weekday: "long", day: "numeric", month: "long", ...(år ? { year: "numeric" } : {}),
+  });
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 export function tidpunkt(iso: string): string {
@@ -172,84 +203,40 @@ export function meddelande(url: URL): Raw {
 export const felruta = (text: string | null) => (text ? html`<p class="fel">${text}</p>` : raw(""));
 
 export function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = ""): Raw {
-  const färg = s?.color ?? STANDARDFÄRG;
   const länk = (väg: string, namn: string) =>
     html`<a href="${väg}"${raw(aktiv === väg ? ' aria-current="page"' : "")}>${namn}</a>`;
   return html`<html lang="sv">
     <head>
       <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
       <meta name="robots" content="noindex" />
-      <title>${titel} · ${s?.name ?? "Snicksnack-mottagare"}</title>
-      <style>
-        :root { --accent: ${raw(/^#[0-9A-Fa-f]{6}$/.test(färg) ? färg : STANDARDFÄRG)}; --bg: #faf9f7; --fg: #1d1d1f;
-          --dim: #6e6e73; --kant: #e3e1dc; --yta: #fff; color-scheme: light dark; }
-        @media (prefers-color-scheme: dark) { :root { --bg: #161616; --fg: #ececec; --dim: #9a9a9f; --kant: #333; --yta: #1f1f1f; } }
-        * { box-sizing: border-box; }
-        body { margin: 0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-          background: var(--bg); color: var(--fg); }
-        header { border-bottom: 3px solid var(--accent); background: var(--yta); }
-        header .inre, main { max-width: 980px; margin: 0 auto; padding: 12px 16px; }
-        header .inre { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
-        header strong { margin-right: auto; display: flex; gap: 8px; align-items: center; }
-        header img { width: 28px; height: 28px; border-radius: 6px; }
-        nav { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
-        nav a { color: var(--fg); text-decoration: none; }
-        nav a[aria-current] { color: var(--accent); font-weight: 600; }
-        a { color: var(--accent); }
-        h1 { font-size: 1.5rem; margin: 20px 0 12px; }
-        h2 { font-size: 1.15rem; margin: 28px 0 10px; }
-        table { border-collapse: collapse; width: 100%; background: var(--yta); }
-        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--kant); vertical-align: top; }
-        th { font-weight: 600; font-size: .85rem; color: var(--dim); }
-        .tabell { overflow-x: auto; }
-        .kort { background: var(--yta); border: 1px solid var(--kant); border-radius: 10px; padding: 14px 16px; margin: 12px 0; }
-        label { display: block; margin: 10px 0 4px; font-weight: 500; }
-        label.val { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin: 4px 14px 4px 0; }
-        input[type=text], input[type=password], select { font: inherit; padding: 7px 9px; border: 1px solid var(--kant);
-          border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; max-width: 420px; }
-        textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--kant); border-radius: 6px; background: var(--bg);
-          color: var(--fg); width: 100%; }
-        input[type=color] { width: 60px; height: 36px; border: 1px solid var(--kant); border-radius: 6px; background: none; }
-        button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
-          color: #fff; cursor: pointer; }
-        button.diskret { background: transparent; color: var(--accent); }
-        button.farlig { background: transparent; color: #c0392b; border-color: #c0392b; }
-        .rad { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-        .rad form { margin: 0; }
-        .dim { color: var(--dim); }
-        .meddelande { background: color-mix(in srgb, var(--accent) 14%, var(--yta)); padding: 8px 12px; border-radius: 6px; }
-        .fel { background: #fdecea; color: #8a1c12; padding: 8px 12px; border-radius: 6px; }
-        @media (prefers-color-scheme: dark) { .fel { background: #3b1714; color: #ffb4a9; } }
-        code, pre { font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-        code { background: color-mix(in srgb, var(--fg) 7%, transparent); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
-        pre.text { white-space: pre-wrap; background: var(--yta); border: 1px solid var(--kant); padding: 14px; border-radius: 8px; }
-        .qr { background: #fff; padding: 12px; border-radius: 10px; width: min(320px, 100%); }
-        .qr svg { width: 100%; height: auto; display: block; }
-        .tagg { display: inline-block; border: 1px solid var(--kant); border-radius: 99px; padding: 0 8px; margin: 0 4px 4px 0; font-size: .85rem; }
-        dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
-        dt { color: var(--dim); }
-        dd { margin: 0; }
-        audio { width: 100%; max-width: 520px; }
-      </style>
+      <meta name="theme-color" content="#FBF5EC" media="(prefers-color-scheme: light)" />
+      <meta name="theme-color" content="#1A1411" media="(prefers-color-scheme: dark)" />
+      <link rel="icon" type="image/svg+xml" href="${FAVICON}" />
+      <title>${titel} · ${s?.name ?? "Snicksnack"}</title>
+      <style>${raw(STIL)}</style>
     </head>
     <body>
-      <header>
+      <header class="topp">
         <div class="inre">
-          <strong>${s?.icon ? html`<img src="/icon.png?v=${ikonversion(s.icon)}" alt="" />` : ""}${s?.name ?? "Snicksnack-mottagare"}</strong>
+          <div class="topprad">
+            <a class="marke" href="/admin">${logga()}<span>${s?.name ?? "Snicksnack"}</span></a>
+            ${s
+              ? html`<form method="post" action="/admin/logout"><button class="diskret liten">Logga ut</button></form>`
+              : ""}
+          </div>
           ${s
-            ? html`<nav>
-                ${länk("/admin/snack", "Snack")} ${länk("/admin/mal", "Mål")} ${länk("/admin/avsandare", "Avsändare")}
-                ${länk("/admin/prompter", "Prompter")} ${länk("/admin/leverantorer", "Leverantörer")}
-                ${länk("/admin/installningar", "Inställningar")}
-                <form method="post" action="/admin/logout" style="margin:0">
-                  <button class="diskret" style="padding:2px 8px">Logga ut</button>
-                </form>
+            ? html`<nav class="flikar" aria-label="Admin">
+                ${länk("/admin/snack", "Snack")}${länk("/admin/mal", "Mål")}${länk("/admin/avsandare", "Avsändare")}${länk(
+                  "/admin/prompter",
+                  "Prompter",
+                )}${länk("/admin/leverantorer", "Leverantörer")}${länk("/admin/installningar", "Inställningar")}
               </nav>`
             : ""}
         </div>
       </header>
       <main>${innehåll}</main>
+      <script>${raw(SKRIPT)}</script>
     </body>
   </html>`;
 }
@@ -281,13 +268,14 @@ function loginSida(url: URL, fel: string | null = null, status = 200): Response 
     sida(
       null,
       "Logga in",
-      html`<h1>Logga in</h1>
+      html`<div class="lugn">
+        ${rubrik("Logga in", "Adminsidan för mottagaren.")}
         ${felruta(fel)}
-        <form method="post" action="/admin/login?next=${encodeURIComponent(säkerNästa(url))}" class="kort" style="max-width:460px">
-          <label for="pw">Lösenord</label>
-          <input id="pw" type="password" name="password" autocomplete="current-password" autofocus required />
-          <div class="rad"><button>Logga in</button></div>
-        </form>`,
+        <form method="post" action="/admin/login?next=${encodeURIComponent(säkerNästa(url))}" class="kort">
+          ${fältrad("Lösenord", html`<input id="pw" type="password" name="password" autocomplete="current-password" autofocus required />`)}
+          <button class="bred">Logga in</button>
+        </form>
+      </div>`,
     ),
     status,
   );
@@ -320,35 +308,40 @@ async function snackLista(env: Env, s: Inställningar, url: URL): Promise<Respon
   const val = (alla: { id: string; name: string }[], valt: string) =>
     alla.map((x) => html`<option value="${x.id}"${raw(x.id === valt ? " selected" : "")}>${x.name}</option>`);
 
-  const tabell = rader.results.length
-    ? html`<div class="tabell"><table>
-        <thead><tr><th>Titel</th><th>Inspelat</th><th>Längd</th><th>Mål</th><th>Avsändare</th><th>Mottaget</th></tr></thead>
-        <tbody>
-          ${rader.results.map(
-            (r) => html`<tr>
-              <td><a href="/admin/snack${vägTill(r.target_id, r.sender_id, r.snack_id)}">${r.title || r.snack_id}</a></td>
-              <td>${inspelad(r.recorded_at)}</td>
-              <td>${längd(r.duration)}</td>
-              <td><a href="?mal=${encodeURIComponent(r.target_id)}">${r.target_name ?? r.target_id}</a></td>
-              <td><a href="?avsandare=${encodeURIComponent(r.sender_id)}">${r.sender_name ?? r.sender_id}</a></td>
-              <td class="dim">${tidpunkt(r.updated_at)}${r.sends > 1 ? html` (${r.sends} ggr)` : ""}</td>
-            </tr>`,
-          )}
-        </tbody></table></div>`
-    : html`<p class="dim">Inga snack ${målFilter || avsFilter ? "med det urvalet" : "än"}.</p>`;
+  // Grupperat per dag som i appens arkiv (efter när snacket kom in, senaste först)
+  const dagar = new Map<string, SnackRad[]>();
+  for (const r of rader.results) {
+    const dag = dagnyckel(r.updated_at);
+    dagar.set(dag, [...(dagar.get(dag) ?? []), r]);
+  }
+  const rad = (r: SnackRad) => html`<a class="radlank" href="/admin/snack${vägTill(r.target_id, r.sender_id, r.snack_id)}">
+    <div class="radtext">
+      <div class="radtopp"><span class="namn">${r.title || r.snack_id}</span><time>${klocka(r.updated_at)}</time></div>
+      <div class="meta">${inspeladLång(r.recorded_at)} · ${längd(r.duration)}</div>
+      <div class="meta">${r.target_name ?? r.target_id} · ${r.sender_name ?? r.sender_id}${r.sends > 1 ? ` · skickat ${r.sends} gånger` : ""}</div>
+    </div>
+    <span class="chev">›</span>
+  </a>`;
+
+  const filtrerat = Boolean(målFilter || avsFilter);
+  const innehåll = rader.results.length
+    ? [...dagar].map(([dag, rr]) => html`<h2 class="dag">${dagnamn(dag)}</h2><div class="lista">${rr.map(rad)}</div>`)
+    : tomt(filtrerat ? "Inga snack med det urvalet." : "Här är det tyst. När någon skickar ett snack hamnar det här.");
 
   return htmlSvar(
     sida(
       s,
       "Snack",
-      html`<h1>Mottagna snack</h1>
+      html`${rubrik("Mottagna snack", "Allt som skickats hit från Snicksnack.")}
         ${meddelande(url)}
-        <form method="get" class="rad" style="margin-bottom:14px">
-          <select name="mal" style="width:auto"><option value="">Alla mål</option>${val(mål, målFilter)}</select>
-          <select name="avsandare" style="width:auto"><option value="">Alla avsändare</option>${val(avsändare, avsFilter)}</select>
-          <button class="diskret">Visa</button>
-        </form>
-        ${tabell}`,
+        ${rader.results.length || filtrerat
+          ? html`<form method="get" class="filter">
+              <select name="mal" aria-label="Mål"><option value="">Alla mål</option>${val(mål, målFilter)}</select>
+              <select name="avsandare" aria-label="Avsändare"><option value="">Alla avsändare</option>${val(avsändare, avsFilter)}</select>
+              <button class="diskret liten">Visa</button>
+            </form>`
+          : ""}
+        ${innehåll}`,
       "/admin/snack",
     ),
   );
@@ -366,9 +359,122 @@ async function hämtaSnack(env: Env, t: string, a: string, id: string): Promise<
   return r;
 }
 
+interface Punkt {
+  section?: string;
+  text?: string;
+  at?: number | null;
+}
+
 interface Sammanfattning {
   kind?: string;
-  items?: { section?: string; text?: string; at?: number | null }[];
+  name?: string;
+  created_at?: string;
+  items?: Punkt[];
+}
+
+interface Ord {
+  text?: string;
+  start?: number;
+  end?: number;
+  speaker?: number | null;
+}
+
+interface Transkript {
+  text?: string;
+  note?: string | null;
+  words?: Ord[];
+  speakers?: Record<string, string>;
+  speakers_hidden?: boolean;
+  summaries?: Sammanfattning[];
+}
+
+const SORTNAMN: Record<string, string> = {
+  short: "Kort",
+  decisions: "Beslut och att göra",
+  minutes: "Protokoll",
+  quotes: "Citat",
+};
+
+const FILTITEL: Record<string, string> = {
+  "audio.m4a": "Ljud",
+  "audio.wav": "Ljud",
+  "transcript.json": "Transkript som data",
+  "text.md": "Text i markdown",
+};
+
+/** "0:12", "12:04" eller "1:02:09". */
+function tidkod(sek: number): string {
+  const s = Math.max(0, Math.floor(sek));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** En tidkod; med ljud blir den en knapp som spelar därifrån. */
+function tidmärke(sek: number, spelbar: boolean): Raw {
+  return spelbar
+    ? html`<button type="button" class="tid" data-t="${sek}" title="Spela härifrån">${tidkod(sek)}</button>`
+    : html`<span class="tid">${tidkod(sek)}</span>`;
+}
+
+const talarklass = (t: number | null) => (t === null ? "" : `t${Math.abs(Math.trunc(t)) % 6}`);
+
+/** Transkriptet i serif med talarbyten, eller null om det inte finns någon text. */
+function transkriptHtml(t: Transkript, spelbar: boolean): Raw | null {
+  const ord = Array.isArray(t.words) ? t.words.filter((o) => o && typeof o.text === "string") : [];
+  if (!ord.length) {
+    if (typeof t.text !== "string" || !t.text.trim()) return null;
+    return html`<div class="transkript">${t.text.split(/\n{2,}/).map((p) => html`<p>${p}</p>`)}</div>`;
+  }
+  const namn = t.speakers && typeof t.speakers === "object" ? t.speakers : {};
+  const visaTalare = !t.speakers_hidden && ord.some((o) => typeof o.speaker === "number");
+  const repliker: { talare: number | null; start: number; stycken: string[][] }[] = [];
+  let förra: Ord | null = null;
+  for (const o of ord) {
+    const talare = visaTalare && typeof o.speaker === "number" ? o.speaker : null;
+    const sista = repliker.at(-1);
+    const paus = förra && typeof o.start === "number" && typeof förra.end === "number" ? o.start - förra.end : 0;
+    const stycke = sista?.stycken.at(-1);
+    if (!sista || !stycke || (visaTalare && talare !== sista.talare)) {
+      repliker.push({ talare, start: o.start ?? 0, stycken: [[o.text!]] });
+    } else if (paus >= 3 || (stycke.length > 90 && /[.!?]$/.test(förra?.text ?? ""))) {
+      sista.stycken.push([o.text!]);
+    } else {
+      stycke.push(o.text!);
+    }
+    förra = o;
+  }
+  return html`<div class="transkript">
+    ${repliker.map(
+      (r) => html`<div class="replik">
+        ${visaTalare
+          ? html`<div class="talare ${talarklass(r.talare)}">${r.talare === null ? "Okänd talare" : (namn[String(r.talare)] ?? `Talare ${r.talare + 1}`)}
+              ${tidmärke(r.start, spelbar)}</div>`
+          : ""}
+        ${r.stycken.map((s) => html`<p>${s.join(" ")}</p>`)}
+      </div>`,
+    )}
+  </div>`;
+}
+
+/** En sammanfattning: rundad och märkt Maskinskrivet, utom citaten som är det människor sa. */
+function sammanfattningHtml(sm: Sammanfattning, spelbar: boolean): Raw {
+  const avsnitt = new Map<string, Punkt[]>();
+  for (const p of Array.isArray(sm.items) ? sm.items : []) {
+    const k = p.section ?? "";
+    avsnitt.set(k, [...(avsnitt.get(k) ?? []), p]);
+  }
+  return html`<section class="sammanfattning">
+    <div class="maskin"><span>${sm.name || SORTNAMN[sm.kind ?? ""] || "Sammanfattning"}</span><span>Maskinskrivet</span></div>
+    ${[...avsnitt].map(([rubrik, punkter]) => {
+      const citat = rubrik === "Citat" || sm.kind === "quotes";
+      return html`${rubrik ? html`<h3>${rubrik}</h3>` : ""}
+        <ul class="punkter${citat ? " citat" : ""}">
+          ${punkter.map((p) => html`<li>${p.text ?? ""}${typeof p.at === "number" ? tidmärke(p.at, spelbar) : ""}</li>`)}
+        </ul>`;
+    })}
+  </section>`;
 }
 
 async function snackSida(env: Env, s: Inställningar, t: string, a: string, id: string, url: URL): Promise<Response> {
@@ -380,7 +486,7 @@ async function snackSida(env: Env, s: Inställningar, t: string, a: string, id: 
     env.FILER.get(prefix + "transcript.json"),
   ]);
   const text = textObj ? await textObj.text() : null;
-  let transkript: { text?: string; summaries?: Sammanfattning[] } = {};
+  let transkript: Transkript = {};
   if (transObj) {
     try {
       transkript = await transObj.json();
@@ -391,52 +497,69 @@ async function snackSida(env: Env, s: Inställningar, t: string, a: string, id: 
   const taggar: string[] = JSON.parse(r.tags || "[]");
   const filväg = (namn: string) => "/admin/fil" + vägTill(t, a, id, namn);
   const ljud = lista.objects.find((o) => o.key.endsWith("/audio.m4a") || o.key.endsWith("/audio.wav"));
+  const titel = r.title || r.snack_id;
 
-  // Sammanfattningarna ur transcript.json visas bara när det inte finns någon text.md (den innehåller dem redan).
-  const sammanfattningar =
-    !text && Array.isArray(transkript.summaries) && transkript.summaries.length
-      ? html`<h2>Sammanfattningar</h2>
-          ${transkript.summaries.map((sm) => {
-            const avsnitt = new Map<string, string[]>();
-            for (const i of sm.items ?? []) {
-              const k = i.section ?? sm.kind ?? "";
-              avsnitt.set(k, [...(avsnitt.get(k) ?? []), i.text ?? ""]);
-            }
-            return [...avsnitt].map(([rubrik, punkter]) => html`<h3>${rubrik}</h3><ul>${punkter.map((p) => html`<li>${p}</li>`)}</ul>`);
-          })}`
-      : "";
+  const talare = new Set(
+    transkript.speakers_hidden || !Array.isArray(transkript.words) ? [] : transkript.words.map((o) => o?.speaker).filter((x) => typeof x === "number"),
+  ).size;
+  const metarad = [inspeladLång(r.recorded_at), längd(r.duration), talare > 1 ? `${talare} talare` : ""].filter(Boolean).join(" · ");
 
-  const brödtext = text ?? transkript.text ?? null;
+  // transcript.json är huvudsaken; text.md visas bara som text när det inte finns något transkript
+  const brödtext = transkriptHtml(transkript, !!ljud);
+  const huvud = brödtext ?? (text ? html`<pre class="text">${text}</pre>` : tomt("Ingen text kom med det här snacket."));
+  const sammanfattningar = Array.isArray(transkript.summaries) ? transkript.summaries.filter((x) => Array.isArray(x?.items) && x.items.length) : [];
+  const innehåll = sammanfattningar.length
+    ? html`<div class="flikvy">
+        <input type="radio" name="vy" id="vy-t" checked /><input type="radio" name="vy" id="vy-s" />
+        <div class="segment"><label for="vy-t">Transkript</label><label for="vy-s">Sammanfattning</label></div>
+        <div class="panel-t">${huvud}</div>
+        <div class="panel-s">${sammanfattningar.map((sm) => sammanfattningHtml(sm, !!ljud))}</div>
+      </div>`
+    : huvud;
 
   return htmlSvar(
     sida(
       s,
-      r.title || r.snack_id,
-      html`<h1>${r.title || r.snack_id}</h1>
+      titel,
+      html`<div class="sidhuvud">
+          <a class="tillbaka" href="/admin/snack">‹ Snack</a>
+          <h1>${titel}</h1>
+          <p class="ingress">${metarad}</p>
+          <div class="chips">
+            <a class="chip" href="/admin/snack?mal=${encodeURIComponent(t)}">${r.target_name ?? t}</a>
+            <a class="chip" href="/admin/snack?avsandare=${encodeURIComponent(a)}">${r.sender_name ?? a}</a>
+            ${taggar.map((x) => html`<span class="chip tagg">#${x}</span>`)}
+          </div>
+        </div>
         ${meddelande(url)}
+        ${ljud ? html`<div class="kort spelare"><audio controls preload="metadata" src="${filväg(ljud.key.slice(prefix.length))}"></audio></div>` : ""}
+        ${typeof transkript.note === "string" && transkript.note.trim()
+          ? html`<div class="kort"><div class="maskin"><span>Anteckning</span></div><p class="anteckning">${transkript.note}</p></div>`
+          : ""}
+        ${innehåll}
+        ${lista.objects.length
+          ? html`<h2>Ladda ner</h2>
+              <div class="lista">
+                ${lista.objects.map((o) => {
+                  const namn = o.key.slice(prefix.length);
+                  return html`<a class="radlank" href="${filväg(namn)}?ladda=1" download>
+                    <div class="radtext"><div class="namn">${FILTITEL[namn] ?? namn}</div><div class="meta fil">${namn} · ${storlek(o.size)}</div></div>
+                    <span class="chev">↓</span>
+                  </a>`;
+                })}
+              </div>`
+          : ""}
+        ${text && brödtext ? html`<details class="kort inlagt"><summary>Visa text.md</summary><pre class="text">${text}</pre></details>` : ""}
+        <h2>Om snacket</h2>
         <div class="kort">
-          <dl>
-            <dt>Inspelat</dt><dd>${inspelad(r.recorded_at)}</dd>
-            <dt>Längd</dt><dd>${längd(r.duration)}</dd>
-            <dt>Mål</dt><dd><a href="/admin/snack?mal=${encodeURIComponent(t)}">${r.target_name ?? t}</a></dd>
-            <dt>Avsändare</dt><dd><a href="/admin/snack?avsandare=${encodeURIComponent(a)}">${r.sender_name ?? a}</a></dd>
-            ${r.language ? html`<dt>Språk</dt><dd>${r.language}</dd>` : ""}
-            ${taggar.length ? html`<dt>Taggar</dt><dd>${taggar.map((x) => html`<span class="tagg">${x}</span>`)}</dd>` : ""}
-            <dt>Mottaget</dt><dd>${tidpunkt(r.received_at)}${r.sends > 1 ? html`, senast ${tidpunkt(r.updated_at)} (${r.sends} sändningar)` : ""}</dd>
-            <dt>Id</dt><dd><code>${t}/${a}/${id}</code></dd>
+          <dl class="fakta">
+            <div><dt>Mottaget</dt><dd>${tidpunkt(r.received_at)}</dd></div>
+            ${r.sends > 1 ? html`<div><dt>Senast</dt><dd>${tidpunkt(r.updated_at)}, ${r.sends} sändningar</dd></div>` : ""}
+            ${r.language ? html`<div><dt>Språk</dt><dd>${r.language}</dd></div>` : ""}
+            <div><dt>Id</dt><dd><code>${t}/${a}/${id}</code></dd></div>
           </dl>
         </div>
-        ${ljud ? html`<audio controls preload="none" src="${filväg(ljud.key.slice(prefix.length))}"></audio>` : ""}
-        <h2>Filer</h2>
-        <ul>
-          ${lista.objects.map((o) => {
-            const namn = o.key.slice(prefix.length);
-            return html`<li><a href="${filväg(namn)}?ladda=1">${namn}</a> <span class="dim">${storlek(o.size)}</span></li>`;
-          })}
-        </ul>
-        ${sammanfattningar}
-        ${brödtext ? html`<h2>Text</h2><pre class="text">${brödtext}</pre>` : html`<p class="dim">Ingen text mottagen.</p>`}
-        <form method="post" action="/admin/snack${vägTill(t, a, id)}/ta-bort" class="rad"
+        <form method="post" action="/admin/snack${vägTill(t, a, id)}/ta-bort" class="knappar"
           onsubmit="return confirm('Ta bort snacket och dess filer?')">
           <button class="farlig">Ta bort snacket</button>
         </form>`,
@@ -491,33 +614,52 @@ async function målSida(env: Env, s: Inställningar, url: URL, fel: string | nul
     sida(
       s,
       "Mål",
-      html`<h1>Mål</h1>
-        <p class="dim">Mål är det avsändaren väljer i appen: kund, projekt, mapp. Id:t är fast (filerna sparas under det).</p>
+      html`${rubrik("Mål", "Det avsändarna väljer när de skickar: kund, projekt eller mapp.")}
         ${meddelande(url)} ${felruta(fel)}
-        ${mål.map((m) => {
-          const r = räkning.get(m.id);
-          return html`<div class="kort">
-            <form method="post" action="/admin/mal/${encodeURIComponent(m.id)}">
-              <div><code>${m.id}</code> <span class="dim">· ${r?.avs ?? 0} avsändare · <a href="/admin/snack?mal=${encodeURIComponent(m.id)}">${r?.snack ?? 0} snack</a></span></div>
-              <label>Namn</label><input type="text" name="name" value="${m.name}" required />
-              <label>Grupp <span class="dim">(valfri)</span></label><input type="text" name="group" value="${m.grp ?? ""}" />
-              <div class="rad"><button>Spara</button></div>
+        ${mål.length
+          ? html`<div class="lista">
+              ${mål.map((m, i) => {
+                const r = räkning.get(m.id);
+                return html`<details class="post">
+                  <summary>
+                    <div class="radtext">
+                      <div class="namn">${m.name}</div>
+                      <div class="meta">${m.grp ? `${m.grp} · ` : ""}${r?.avs ?? 0} avsändare · ${r?.snack ?? 0} snack</div>
+                    </div>
+                    <span class="chev">›</span>
+                  </summary>
+                  <div class="postinnehall">
+                    <form id="ta-bort-mal-${i}" method="post" action="/admin/mal/${encodeURIComponent(m.id)}/ta-bort"
+                      onsubmit="return confirm('Ta bort målet? Mottagna snack ligger kvar.')"></form>
+                    <form method="post" action="/admin/mal/${encodeURIComponent(m.id)}">
+                      ${fältrad("Namn", html`<input type="text" name="name" value="${m.name}" required />`)}
+                      ${fältrad("Grupp", html`<input type="text" name="group" value="${m.grp ?? ""}" placeholder="Ingen grupp" />`)}
+                      <p class="tips">Id <code>${m.id}</code> · <a href="/admin/snack?mal=${encodeURIComponent(m.id)}">Visa snacken</a></p>
+                      <div class="knappar">
+                        <button>Spara</button>
+                        <span class="hoger"><button class="farlig" form="ta-bort-mal-${i}">Ta bort</button></span>
+                      </div>
+                    </form>
+                  </div>
+                </details>`;
+              })}
+            </div>`
+          : tomt("Inga mål än. Skapa ett så har avsändarna något att välja.")}
+        <details class="lista post ny"${raw(!mål.length || fel ? " open" : "")}>
+          <summary><span class="plus">+</span><span class="radtext">Nytt mål</span></summary>
+          <div class="postinnehall">
+            <form method="post" action="/admin/mal">
+              ${fältrad("Namn", html`<input type="text" name="name" required placeholder="Inkorg" />`)}
+              ${fältrad(
+                "Id",
+                html`<input type="text" name="id" pattern="[a-z0-9][a-z0-9._\\-]{0,63}" placeholder="Av namnet, t.ex. inbox" />`,
+                "Valfritt. Gemener, siffror och - _ . Går inte att ändra sedan, filerna sparas under det.",
+              )}
+              ${fältrad("Grupp", html`<input type="text" name="group" placeholder="Kunder" />`, "Valfri. Grupperar målen i appen.")}
+              <div class="knappar"><button>Skapa mål</button></div>
             </form>
-            <form method="post" action="/admin/mal/${encodeURIComponent(m.id)}/ta-bort" class="rad"
-              onsubmit="return confirm('Ta bort målet? Mottagna snack ligger kvar.')">
-              <button class="farlig">Ta bort</button>
-            </form>
-          </div>`;
-        })}
-        ${mål.length ? "" : html`<p class="dim">Inga mål än.</p>`}
-        <h2>Nytt mål</h2>
-        <form method="post" action="/admin/mal" class="kort">
-          <label>Namn</label><input type="text" name="name" required placeholder="Inkorg" />
-          <label>Id <span class="dim">(valfritt, gemener, siffror, - _ .; annars av namnet)</span></label>
-          <input type="text" name="id" pattern="[a-z0-9][a-z0-9._\\-]{0,63}" placeholder="inbox" />
-          <label>Grupp <span class="dim">(valfri)</span></label><input type="text" name="group" placeholder="Kunder" />
-          <div class="rad"><button>Skapa mål</button></div>
-        </form>`,
+          </div>
+        </details>`,
       "/admin/mal",
     ),
     status,
@@ -560,11 +702,11 @@ async function taBortMål(env: Env, id: string): Promise<Response> {
 // ---------- Avsändare ----------
 
 function målVal(mål: Mål[], valda: string[]): Raw {
-  if (!mål.length) return html`<p class="dim">Inga mål än. <a href="/admin/mal">Skapa ett mål</a> först.</p>`;
+  if (!mål.length) return html`<span class="tips">Inga mål än. <a href="/admin/mal">Skapa ett mål</a> först.</span>`;
   return html`${mål.map(
     (m) =>
       html`<label class="val"><input type="checkbox" name="targets" value="${m.id}"${raw(valda.includes(m.id) ? " checked" : "")} />
-        ${m.name}${m.grp ? html` <span class="dim">(${m.grp})</span>` : ""}</label>`,
+        ${m.name}${m.grp ? html` <span class="dim">${m.grp}</span>` : ""}</label>`,
   )}`;
 }
 
@@ -580,43 +722,57 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
     sida(
       s,
       "Avsändare",
-      html`<h1>Avsändare</h1>
-        <p class="dim">Varje person som skickar till dig får en egen nyckel och ser bara de mål du tilldelar.</p>
+      html`${rubrik("Avsändare", "Varje person får en egen nyckel och ser bara de mål du väljer.")}
         ${meddelande(url)} ${felruta(fel)}
-        ${avsändare.map(
-          (a) => html`<div class="kort">
-            <form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}">
-              <div><code>${a.id}</code>
-                <span class="dim">· ${a.key_hint ? html`nyckel …${a.key_hint}` : html`<strong>spärrad</strong>`}
-                · skapad ${tidpunkt(a.created_at)} · <a href="/admin/snack?avsandare=${encodeURIComponent(a.id)}">snack</a></span></div>
-              <label>Namn</label><input type="text" name="name" value="${a.name}" required />
-              <label>Mål</label>${målVal(mål, a.targets)}
-              <label>Prompter</label>${promptVal(prompter, prompterFör(a.id))}
-              <div class="rad"><button>Spara</button></div>
+        ${avsändare.length
+          ? html`<div class="lista">
+              ${avsändare.map(
+                (a, i) => html`<details class="post">
+                  <summary>
+                    <div class="radtext">
+                      <div class="namn">${a.name}</div>
+                      <div class="meta">${a.key_hint ? `Nyckel …${a.key_hint}` : "Spärrad"} · ${a.targets.length} mål · ${prompterFör(a.id).length} prompter</div>
+                    </div>
+                    <span class="chev">›</span>
+                  </summary>
+                  <div class="postinnehall">
+                    <form id="nyckel-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ny-nyckel"
+                      onsubmit="return confirm('Skapa en ny nyckel? Den gamla slutar fungera.')"></form>
+                    ${a.key_hint
+                      ? html`<form id="stang-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/sparra"
+                          onsubmit="return confirm('Spärra avsändaren? Nyckeln slutar fungera direkt.')"></form>`
+                      : html`<form id="stang-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ta-bort"
+                          onsubmit="return confirm('Ta bort avsändaren? Mottagna snack ligger kvar.')"></form>`}
+                    <form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}">
+                      ${fältrad("Namn", html`<input type="text" name="name" value="${a.name}" required />`)}
+                      ${valgrupp("Mål", målVal(mål, a.targets))}
+                      ${valgrupp("Prompter", promptVal(prompter, prompterFör(a.id)))}
+                      <p class="tips">Id <code>${a.id}</code> · skapad ${tidpunkt(a.created_at)} ·
+                        <a href="/admin/snack?avsandare=${encodeURIComponent(a.id)}">Visa snacken</a></p>
+                      <div class="knappar">
+                        <button>Spara</button>
+                        <span class="hoger">
+                          <button class="diskret" form="nyckel-${i}">${a.key_hint ? "Ny nyckel" : "Ge en ny nyckel"}</button>
+                          <button class="farlig" form="stang-${i}">${a.key_hint ? "Spärra" : "Ta bort"}</button>
+                        </span>
+                      </div>
+                    </form>
+                  </div>
+                </details>`,
+              )}
+            </div>`
+          : tomt("Ingen skickar hit än. Lägg till den första nedan.")}
+        <details class="lista post ny"${raw(!avsändare.length || fel ? " open" : "")}>
+          <summary><span class="plus">+</span><span class="radtext">Ny avsändare</span></summary>
+          <div class="postinnehall">
+            <form method="post" action="/admin/avsandare">
+              ${fältrad("Namn", html`<input type="text" name="name" required placeholder="Anna Andersson" />`)}
+              ${valgrupp("Mål", målVal(mål, mål.length === 1 ? [mål[0].id] : []))}
+              ${valgrupp("Prompter", promptVal(prompter, []), "Extern AI: sammanfattningar och chatt.")}
+              <div class="knappar"><button>Skapa och visa nyckel</button></div>
             </form>
-            <div class="rad">
-              <form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ny-nyckel"
-                onsubmit="return confirm('Skapa en ny nyckel? Den gamla slutar fungera.')">
-                <button class="diskret">${a.key_hint ? "Ny nyckel" : "Ge en ny nyckel"}</button>
-              </form>
-              ${a.key_hint
-                ? html`<form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/sparra"
-                    onsubmit="return confirm('Spärra avsändaren? Nyckeln slutar fungera direkt.')">
-                    <button class="farlig">Spärra</button></form>`
-                : html`<form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ta-bort"
-                    onsubmit="return confirm('Ta bort avsändaren? Mottagna snack ligger kvar.')">
-                    <button class="farlig">Ta bort</button></form>`}
-            </div>
-          </div>`,
-        )}
-        ${avsändare.length ? "" : html`<p class="dim">Inga avsändare än.</p>`}
-        <h2>Ny avsändare</h2>
-        <form method="post" action="/admin/avsandare" class="kort">
-          <label>Namn</label><input type="text" name="name" required placeholder="Anna Andersson" />
-          <label>Mål</label>${målVal(mål, mål.length === 1 ? [mål[0].id] : [])}
-          <label>Prompter <span class="dim">(extern AI: sammanfattningar och chatt)</span></label>${promptVal(prompter, [])}
-          <div class="rad"><button>Skapa och visa nyckel</button></div>
-        </form>`,
+          </div>
+        </details>`,
       "/admin/avsandare",
     ),
     status,
@@ -707,19 +863,21 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL): 
     sida(
       s,
       `Nyckel för ${namn}`,
-      html`<h1>Nyckel för ${namn}</h1>
-        <p class="meddelande"><strong>Nyckeln visas bara nu.</strong> Den sparas bara som hash och går inte att visa igen.
-          Tappas den bort: skapa en ny under Avsändare.</p>
-        <p>Be ${namn} lägga till en mottagare i Snicksnack och skanna koden, eller skicka länken nedan.</p>
-        <div class="qr">${raw(qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true }))}</div>
-        <div class="kort">
-          <dl>
-            <dt>Adress</dt><dd><code>${url.origin}</code></dd>
-            <dt>Nyckel</dt><dd><code>${nyckel}</code></dd>
-            <dt>Länk</dt><dd><code>${länk}</code></dd>
+      html`<div class="lugn">
+        ${rubrik("Skanna i Snicksnack", `Nyckeln för ${namn}. Lägg till en mottagare i appen och rikta kameran hit.`)}
+        <div class="qr">${raw(qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }))}</div>
+        <p class="meddelande">Koden visas bara nu. Tappas den bort gör du en ny nyckel under Avsändare.</p>
+        <details class="kort inlagt">
+          <summary>Skicka länken i stället</summary>
+          <dl class="fakta" style="margin-top:8px">
+            <div><dt>Adress</dt><dd><code>${url.origin}</code></dd></div>
+            <div><dt>Nyckel</dt><dd><code>${nyckel}</code></dd></div>
+            <div><dt>Länk</dt><dd><code>${länk}</code></dd></div>
           </dl>
-        </div>
-        <p><a href="/admin/avsandare">Tillbaka till avsändarna</a></p>`,
+          <div class="knappar"><button type="button" class="diskret" data-kopiera="${länk}">Kopiera länken</button></div>
+        </details>
+        <div class="knappar"><a class="knapp" href="/admin/avsandare">Klar</a></div>
+      </div>`,
       "/admin/avsandare",
     ),
   );
@@ -733,39 +891,58 @@ async function inställningsSida(env: Env, s: Inställningar, url: URL, fel: str
     sida(
       s,
       "Inställningar",
-      html`<h1>Inställningar</h1>
-        <p class="dim">Det här visas i Snicksnack när någon kopplar mottagaren. Adress för appen: <code>${url.origin}</code></p>
+      html`${rubrik("Inställningar", "Så ser mottagaren ut i Snicksnack, och vad den tar emot.")}
         ${meddelande(url)} ${felruta(fel)}
-        <form method="post" action="/admin/installningar" enctype="multipart/form-data" class="kort">
-          <label for="namn">Namn</label>
-          <input id="namn" type="text" name="name" value="${s.name}" required maxlength="60" />
-          <label for="farg">Färg</label>
-          <div class="rad" style="margin-top:0">
-            <input id="farg" type="color" name="color" value="${s.color ?? STANDARDFÄRG}" />
-            <label class="val"><input type="checkbox" name="no_color"${raw(s.color ? "" : " checked")} /> Ingen egen färg</label>
+        <form method="post" action="/admin/installningar" enctype="multipart/form-data">
+          <h2>I appen</h2>
+          <div class="kort">
+            <div class="forhand">
+              ${s.icon ? html`<img src="/icon.png?v=${ikonversion(s.icon)}" alt="" />` : logga()}
+              <div class="radtext"><div class="namn">${s.name}</div><div class="meta">Adress för appen: <code>${url.origin}</code></div></div>
+            </div>
+            ${fältrad("Namn", html`<input id="namn" type="text" name="name" value="${s.name}" required maxlength="60" />`)}
+            <fieldset class="falt">
+              <legend class="etikett">Färg</legend>
+              <div class="sidvid">
+                <input id="farg" type="color" name="color" value="${s.color ?? STANDARDFÄRG}" aria-label="Färg" />
+                ${växel("no_color", "Ingen egen färg", !s.color)}
+              </div>
+            </fieldset>
+            <fieldset class="falt">
+              <legend class="etikett">Logga</legend>
+              ${s.icon ? växel("remove_icon", "Ta bort loggan", false) : ""}
+              <input type="file" name="icon" accept="image/png" aria-label="Logga" />
+              <span class="tips">Kvadratisk PNG, minst 256 px och högst 2 MB.</span>
+            </fieldset>
           </div>
-          <label>Logga <span class="dim">(kvadratisk PNG, minst 256 px, högst 2 MB)</span></label>
-          ${s.icon ? html`<div class="rad" style="margin-top:0"><img src="/icon.png?v=${ikonversion(s.icon)}" alt="" width="64" height="64" style="border-radius:12px" />
-            <label class="val"><input type="checkbox" name="remove_icon" /> Ta bort loggan</label></div>` : ""}
-          <input type="file" name="icon" accept="image/png" />
-          <label>Vad appen ska skicka</label>
-          ${DELAR.map(
-            (d) => html`<label class="val"><input type="checkbox" name="accepts" value="${d}"${raw(s.accepts.includes(d) ? " checked" : "")} /> ${DELNAMN[d]}</label>`,
-          )}
-          <p class="dim">Utan ljud blir sändningarna små; ljud i Apple Lossless tar ungefär 66 MB per timme.</p>
+          <h2>Det här tas emot</h2>
+          <div class="kort">
+            ${valgrupp(
+              "Vad appen ska skicka",
+              DELAR.map(
+                (d) => html`<label class="val"><input type="checkbox" name="accepts" value="${d}"${raw(s.accepts.includes(d) ? " checked" : "")} /> ${DELNAMN[d]}</label>`,
+              ),
+              "Ljud i Apple Lossless tar ungefär 66 MB per timme. Utan ljud blir sändningarna små.",
+            )}
+          </div>
           <h2>Fri fråga i chatten</h2>
-          <p class="dim">När någon skriver en egen fråga i stället för att välja en prompt. Bara avsändare som har minst en
-            chattprompt kan chatta. Tomt = samma leverantör och modell som deras första chattprompt.</p>
-          <label for="chat_provider">Leverantör</label>
-          <select id="chat_provider" name="chat_provider">
-            <option value="">Som första chattprompten</option>
-            ${leverantörer.map((l) => html`<option value="${l.id}"${raw(l.id === s.chatProvider ? " selected" : "")}>${l.name}</option>`)}
-          </select>
-          <label for="chat_model">Modell <span class="dim">(tom = leverantörens standard)</span></label>
-          <input id="chat_model" type="text" name="chat_model" value="${s.chatModel ?? ""}" />
-          <label for="chat_system">Systemtext <span class="dim">(tom = inbyggd; gäller också prompter utan egen systemtext)</span></label>
-          <textarea id="chat_system" name="chat_system" rows="4">${s.chatSystem}</textarea>
-          <div class="rad"><button>Spara</button></div>
+          <div class="kort">
+            <p class="tips" style="margin:0 2px 16px">När någon skriver en egen fråga i stället för att välja en prompt. Kräver minst en chattprompt.</p>
+            ${fältrad(
+              "Leverantör",
+              html`<select id="chat_provider" name="chat_provider">
+                <option value="">Som första chattprompten</option>
+                ${leverantörer.map((l) => html`<option value="${l.id}"${raw(l.id === s.chatProvider ? " selected" : "")}>${l.name}</option>`)}
+              </select>`,
+            )}
+            ${fältrad("Modell", html`<input id="chat_model" type="text" name="chat_model" value="${s.chatModel ?? ""}" placeholder="Leverantörens standard" />`)}
+            ${fältrad(
+              "Systemtext",
+              html`<textarea id="chat_system" name="chat_system" rows="4" placeholder="Den inbyggda">${s.chatSystem}</textarea>`,
+              "Gäller också prompter utan egen systemtext.",
+            )}
+          </div>
+          <div class="knappar"><button>Spara</button></div>
         </form>`,
       "/admin/installningar",
     ),
