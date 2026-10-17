@@ -35,10 +35,10 @@ describe("well-known", () => {
   });
 
   it("tar med color och icon när de är satta", async () => {
-    await env.DB.prepare("INSERT OR REPLACE INTO settings VALUES ('color', '#E27B48'), ('icon', '2026-10-17T10:00:00.000Z'), ('name', 'Mattias')").run();
+    await env.DB.prepare("INSERT OR REPLACE INTO settings VALUES ('color', '#E27B48'), ('icon', '2026-10-17T10:00:00.000Z'), ('name', 'Exempelbolaget')").run();
     await env.FILER.put("_config/icon.png", pngRubrik(256, 256), { httpMetadata: { contentType: "image/png" } });
     const b = await (await anropa("/.well-known/snicksnack")).json<Record<string, unknown>>();
-    expect(b.name).toBe("Mattias");
+    expect(b.name).toBe("Exempelbolaget");
     expect(b.color).toBe("#E27B48");
     expect(b.icon).toBe(`${BAS}/icon.png?v=20261017100000000`);
 

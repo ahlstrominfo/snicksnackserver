@@ -122,7 +122,7 @@ describe("admin-flödet", () => {
   it("inställningar: namn, färg och logga syns i well-known", async () => {
     const kaka = await cookie();
     const f = new FormData();
-    f.append("name", "Mattias mottagare");
+    f.append("name", "Exempelmottagaren");
     f.append("color", "#e27b48");
     f.append("accepts", "transcript");
     f.append("accepts", "text");
@@ -130,7 +130,7 @@ describe("admin-flödet", () => {
     expect((await post("/admin/installningar", kaka, f)).status).toBe(303);
 
     const b = await (await anropa("/.well-known/snicksnack")).json<Record<string, unknown>>();
-    expect(b).toMatchObject({ name: "Mattias mottagare", color: "#E27B48", accepts: ["transcript", "text"] });
+    expect(b).toMatchObject({ name: "Exempelmottagaren", color: "#E27B48", accepts: ["transcript", "text"] });
 
     expect(b.icon).toMatch(new RegExp(`^${BAS}/icon\\.png\\?v=\\d+$`));
     expect((await anropa(new URL(b.icon as string).pathname + new URL(b.icon as string).search)).status).toBe(200);
