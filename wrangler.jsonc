@@ -1,7 +1,10 @@
 {
-  // Snicksnack-mottagaren. Byt database_id mot id:t från `wrangler d1 create` innan du deployar.
+  // Snicksnack-mottagaren. Den här filen pekar på Mattias egen installation (kontot mattias, snicksnackserver.applicerad.ai).
+  // För en egen: byt account_id, routes och database_id (från `wrangler d1 create`).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "snicksnack-mottagare",
+  "account_id": "34b3ff26c4be7161a843f6798c2b5f61",
+  "routes": [{ "pattern": "snicksnackserver.applicerad.ai", "custom_domain": true }],
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
@@ -16,7 +19,7 @@
     {
       "binding": "DB",
       "database_name": "snicksnack-mottagare",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "b3df0bc2-c680-4ce7-b4e5-c52ed8a70c7e",
       "migrations_dir": "migrations"
     }
   ]
