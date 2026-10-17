@@ -10,7 +10,9 @@
   "observability": { "enabled": true },
   "vars": {
     // Största kropp i byte. Workers tar högst 100 MB på gratis- och Pro-planen.
-    "MAX_BYTES": "104857600"
+    "MAX_BYTES": "104857600",
+    // Största kropp för summarize och chat (transcript.json), i byte.
+    "AI_MAX_BYTES": "20971520"
   },
   "r2_buckets": [
     { "binding": "FILER", "bucket_name": "snicksnack-mottagare" }

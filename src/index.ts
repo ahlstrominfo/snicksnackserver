@@ -2,6 +2,7 @@
 // Protokollet: docs/protokoll.md. Admin: /admin.
 
 import { admin } from "./admin";
+import { chatta, listaPrompter, sammanfatta } from "./ai/anrop";
 import { fel, ikon, receive, targets, wellKnown } from "./protokoll";
 
 export default {
@@ -19,6 +20,17 @@ export default {
         const mål = pathname.slice("/snicksnack/receive/".length);
         if (!mål || mål.includes("/")) return fel(404, "Okänt mål");
         return metod === "POST" ? await receive(req, env, ctx, mål) : fel(405, "Bara POST");
+      }
+      if (pathname === "/snicksnack/summarize") {
+        return metod === "GET" ? await listaPrompter(req, env) : fel(405, "Bara GET");
+      }
+      if (pathname.startsWith("/snicksnack/summarize/")) {
+        const id = pathname.slice("/snicksnack/summarize/".length);
+        if (!id || id.includes("/")) return fel(404, "Okänd prompt");
+        return metod === "POST" ? await sammanfatta(req, env, ctx, id) : fel(405, "Bara POST");
+      }
+      if (pathname === "/snicksnack/chat") {
+        return metod === "POST" ? await chatta(req, env, ctx) : fel(405, "Bara POST");
       }
       if (pathname === "/icon.png") {
         return metod === "GET" || metod === "HEAD" ? await ikon(req, env) : fel(405, "Bara GET");

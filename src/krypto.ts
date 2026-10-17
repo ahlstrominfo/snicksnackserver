@@ -71,3 +71,38 @@ export function läsCookie(req: Request, namn: string): string | undefined {
   }
   return undefined;
 }
+
+// ---------- API-nycklar till AI-leverantörer ----------
+// Krypteras med AES-GCM. Nyckeln härleds med HKDF ur secret KEY_SECRET; utan den går det inte att spara
+// eller använda nycklar. Formatet i D1: "v1.<iv>.<chiffer>" (base64url).
+
+async function aesNyckel(hemlighet: string): Promise<CryptoKey> {
+  const bas = await crypto.subtle.importKey("raw", kodare.encode(hemlighet), "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: kodare.encode("snicksnack-mottagare"), info: kodare.encode("api-nycklar/v1") },
+    bas,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+export async function kryptera(hemlighet: string, klartext: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesNyckel(hemlighet), kodare.encode(klartext));
+  return `v1.${base64url(iv)}.${base64url(new Uint8Array(ct))}`;
+}
+
+export async function dekryptera(hemlighet: string, värde: string): Promise<string> {
+  const [v, iv, ct] = värde.split(".");
+  const ivb = iv ? frånBase64url(iv) : null;
+  const ctb = ct ? frånBase64url(ct) : null;
+  if (v !== "v1" || !ivb || !ctb) throw new Error("Okänt format på den sparade nyckeln");
+  const klar = await crypto.subtle.decrypt({ name: "AES-GCM", iv: ivb }, await aesNyckel(hemlighet), ctb);
+  return new TextDecoder().decode(klar);
+}
+
+/** Visas i admin i stället för nyckeln: "sk-ant-…abcd". */
+export function maskera(nyckel: string): string {
+  return nyckel.length <= 12 ? "…" + nyckel.slice(-2) : `${nyckel.slice(0, 7)}…${nyckel.slice(-4)}`;
+}

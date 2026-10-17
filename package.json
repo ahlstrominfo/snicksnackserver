@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Öppen referensmottagare för Snicksnack som Cloudflare Worker",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --local-upstream=localhost:8787",
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc -p .",
@@ -16,6 +16,7 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "qrcode-generator": "^2.0.4"
   },
   "devDependencies": {

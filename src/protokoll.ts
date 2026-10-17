@@ -8,6 +8,7 @@ import {
   tilldelatMål,
   type Avsändare,
 } from "./db";
+import { promptsorter } from "./ai/anrop";
 import { efterMottagning } from "./efter-mottagning";
 
 export const IKON_NYCKEL = "_config/icon.png";
@@ -23,7 +24,7 @@ export const fel = (status: number, text: string) => json({ error: text }, statu
 
 export async function wellKnown(req: Request, env: Env): Promise<Response> {
   const origin = new URL(req.url).origin;
-  const s = await hämtaInställningar(env.DB);
+  const [s, sorter] = await Promise.all([hämtaInställningar(env.DB), promptsorter(env.DB)]);
   const svar: Record<string, unknown> = {
     name: s.name,
     version: 1,
@@ -32,13 +33,15 @@ export async function wellKnown(req: Request, env: Env): Promise<Response> {
     receive: `${origin}/snicksnack/receive`,
     accepts: s.accepts,
   };
+  if (sorter.has("summary")) svar.summarize = `${origin}/snicksnack/summarize`;
+  if (sorter.has("chat")) svar.chat = `${origin}/snicksnack/chat`;
   if (s.color) svar.color = s.color;
   // Versionen i adressen gör att appen hämtar loggan igen när den byts (appen hämtar bara när adressen ändras).
   if (s.icon) svar.icon = `${origin}/icon.png?v=${ikonversion(s.icon)}`;
   return json(svar, 200, { "Cache-Control": "public, max-age=300" });
 }
 
-async function inloggadAvsändare(req: Request, env: Env): Promise<Avsändare | null> {
+export async function inloggadAvsändare(req: Request, env: Env): Promise<Avsändare | null> {
   const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "");
   return m ? avsändareFrånNyckel(env.DB, m[1]) : null;
 }

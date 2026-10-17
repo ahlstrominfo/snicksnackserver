@@ -1,1 +1,4 @@
 ADMIN_PASSWORD=byt-mig
+# Nyckel för att kryptera AI-leverantörernas API-nycklar. I produktion: npx wrangler secret put KEY_SECRET (slumpa en lång,
+# t.ex. openssl rand -base64 48). Byts den går de sparade nycklarna inte att läsa längre.
+KEY_SECRET=byt-mig-till-en-lång-slumpad-sträng

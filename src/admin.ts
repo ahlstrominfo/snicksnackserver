@@ -18,6 +18,7 @@ import {
 import { html, htmlSvar, raw, type Raw } from "./html";
 import { giltigSession, läsCookie, nyNyckel, rättLösenord, sha256Hex, skapaSession, SESSION_DAGAR } from "./krypto";
 import { IKON_NYCKEL, ikonversion } from "./protokoll";
+import { adminAi, allaPrompter, promptVal, sättPrompterFörAvsändare } from "./admin-ai";
 
 const COOKIE = "snicksnack_admin";
 const STANDARDFÄRG = "#E27B48";
@@ -26,7 +27,7 @@ const STÖRSTA_IKON = 2 * 1024 * 1024; // appen hämtar högst 2 MB
 
 const DELNAMN: Record<Del, string> = { audio: "Ljud", transcript: "Transkript (transcript.json)", text: "Text (markdown)" };
 
-class EjFunnen extends Error {}
+export class EjFunnen extends Error {}
 
 // ---------- Ingång ----------
 
@@ -86,12 +87,12 @@ export async function admin(req: Request, env: Env): Promise<Response> {
         if (delar.length === 5 && !post) return await fil(req, env, delar[1], delar[2], delar[3], delar[4], url);
         break;
       case "mal":
-        if (delar.length === 1) return await post ? skapaMål(req, env, s) : målSida(env, s, url);
+        if (delar.length === 1) return await (post ? skapaMål(req, env, s) : målSida(env, s, url));
         if (delar.length === 2 && post) return await ändraMål(req, env, delar[1]);
         if (delar.length === 3 && delar[2] === "ta-bort" && post) return await taBortMål(env, delar[1]);
         break;
       case "avsandare":
-        if (delar.length === 1) return await post ? skapaAvsändare(req, env, s, url) : avsändarSida(env, s, url);
+        if (delar.length === 1) return await (post ? skapaAvsändare(req, env, s, url) : avsändarSida(env, s, url));
         if (delar.length === 2 && post) return await ändraAvsändare(req, env, delar[1]);
         if (delar.length === 3 && post) {
           if (delar[2] === "sparra") return await spärra(env, delar[1]);
@@ -99,8 +100,14 @@ export async function admin(req: Request, env: Env): Promise<Response> {
           if (delar[2] === "ta-bort") return await taBortAvsändare(env, delar[1]);
         }
         break;
+      case "prompter":
+      case "leverantorer": {
+        const svar = await adminAi(req, env, s, delar, url);
+        if (svar) return svar;
+        break;
+      }
       case "installningar":
-        if (delar.length === 1) return await post ? sparaInställningar(req, env, s) : inställningsSida(s, url);
+        if (delar.length === 1) return await (post ? sparaInställningar(req, env, s) : inställningsSida(env, s, url));
         break;
     }
   } catch (e) {
@@ -117,11 +124,11 @@ function cookie(url: URL, värde: string, maxAge: number): string {
   return `${COOKIE}=${värde}; Path=/admin; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${säker}`;
 }
 
-function omdirigera(till: string, huvuden: Record<string, string> = {}): Response {
+export function omdirigera(till: string, huvuden: Record<string, string> = {}): Response {
   return new Response(null, { status: 303, headers: { Location: till, "Cache-Control": "no-store", ...huvuden } });
 }
 
-const medMeddelande = (väg: string, text: string) => omdirigera(`${väg}?meddelande=${encodeURIComponent(text)}`);
+export const medMeddelande = (väg: string, text: string) => omdirigera(`${väg}?meddelande=${encodeURIComponent(text)}`);
 
 async function inteFunnen(env: Env, s?: Inställningar): Promise<Response> {
   return htmlSvar(sida(s ?? (await hämtaInställningar(env.DB)), "Finns inte", html`<p>Sidan finns inte.</p>`), 404);
@@ -145,7 +152,7 @@ function inspelad(iso: string | null): string {
   return m ? `${m[1]} ${m[2]}` : (iso ?? "–");
 }
 
-function tidpunkt(iso: string): string {
+export function tidpunkt(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleString("sv-SE", { timeZone: "Europe/Stockholm", dateStyle: "short", timeStyle: "short" });
@@ -157,14 +164,14 @@ function storlek(b: number): string {
   return `${(b / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
 }
 
-function meddelande(url: URL): Raw {
+export function meddelande(url: URL): Raw {
   const m = url.searchParams.get("meddelande");
   return m ? html`<p class="meddelande">${m}</p>` : raw("");
 }
 
-const felruta = (text: string | null) => (text ? html`<p class="fel">${text}</p>` : raw(""));
+export const felruta = (text: string | null) => (text ? html`<p class="fel">${text}</p>` : raw(""));
 
-function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = ""): Raw {
+export function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = ""): Raw {
   const färg = s?.color ?? STANDARDFÄRG;
   const länk = (väg: string, namn: string) =>
     html`<a href="${väg}"${raw(aktiv === väg ? ' aria-current="page"' : "")}>${namn}</a>`;
@@ -201,6 +208,8 @@ function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = "
         label.val { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin: 4px 14px 4px 0; }
         input[type=text], input[type=password], select { font: inherit; padding: 7px 9px; border: 1px solid var(--kant);
           border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; max-width: 420px; }
+        textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--kant); border-radius: 6px; background: var(--bg);
+          color: var(--fg); width: 100%; }
         input[type=color] { width: 60px; height: 36px; border: 1px solid var(--kant); border-radius: 6px; background: none; }
         button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent);
           color: #fff; cursor: pointer; }
@@ -231,6 +240,7 @@ function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = "
           ${s
             ? html`<nav>
                 ${länk("/admin/snack", "Snack")} ${länk("/admin/mal", "Mål")} ${länk("/admin/avsandare", "Avsändare")}
+                ${länk("/admin/prompter", "Prompter")} ${länk("/admin/leverantorer", "Leverantörer")}
                 ${länk("/admin/installningar", "Inställningar")}
                 <form method="post" action="/admin/logout" style="margin:0">
                   <button class="diskret" style="padding:2px 8px">Logga ut</button>
@@ -244,7 +254,7 @@ function sida(s: Inställningar | null, titel: string, innehåll: Raw, aktiv = "
   </html>`;
 }
 
-async function formulär(req: Request): Promise<FormData> {
+export async function formulär(req: Request): Promise<FormData> {
   try {
     return await req.formData();
   } catch {
@@ -252,12 +262,12 @@ async function formulär(req: Request): Promise<FormData> {
   }
 }
 
-const fält = (f: FormData, namn: string) => {
+export const fält = (f: FormData, namn: string) => {
   const v = f.get(namn);
   return typeof v === "string" ? v.trim() : "";
 };
 
-const flera = (f: FormData, namn: string) => f.getAll(namn).filter((v): v is string => typeof v === "string");
+export const flera = (f: FormData, namn: string) => f.getAll(namn).filter((v): v is string => typeof v === "string");
 
 // ---------- Inloggning ----------
 
@@ -559,7 +569,13 @@ function målVal(mål: Mål[], valda: string[]): Raw {
 }
 
 async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string | null = null, status = 200): Promise<Response> {
-  const [avsändare, mål] = await Promise.all([allaAvsändare(env.DB), allaMål(env.DB)]);
+  const [avsändare, mål, prompter, tilldelade] = await Promise.all([
+    allaAvsändare(env.DB),
+    allaMål(env.DB),
+    allaPrompter(env.DB),
+    env.DB.prepare("SELECT sender_id, prompt_id FROM sender_prompts").all<{ sender_id: string; prompt_id: string }>(),
+  ]);
+  const prompterFör = (id: string) => tilldelade.results.filter((r) => r.sender_id === id).map((r) => r.prompt_id);
   return htmlSvar(
     sida(
       s,
@@ -575,6 +591,7 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
                 · skapad ${tidpunkt(a.created_at)} · <a href="/admin/snack?avsandare=${encodeURIComponent(a.id)}">snack</a></span></div>
               <label>Namn</label><input type="text" name="name" value="${a.name}" required />
               <label>Mål</label>${målVal(mål, a.targets)}
+              <label>Prompter</label>${promptVal(prompter, prompterFör(a.id))}
               <div class="rad"><button>Spara</button></div>
             </form>
             <div class="rad">
@@ -597,6 +614,7 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
         <form method="post" action="/admin/avsandare" class="kort">
           <label>Namn</label><input type="text" name="name" required placeholder="Anna Andersson" />
           <label>Mål</label>${målVal(mål, mål.length === 1 ? [mål[0].id] : [])}
+          <label>Prompter <span class="dim">(extern AI: sammanfattningar och chatt)</span></label>${promptVal(prompter, [])}
           <div class="rad"><button>Skapa och visa nyckel</button></div>
         </form>`,
       "/admin/avsandare",
@@ -633,6 +651,7 @@ async function skapaAvsändare(req: Request, env: Env, s: Inställningar, url: U
     .bind(id, namn, await sha256Hex(nyckel), nyckel.slice(-4), nu())
     .run();
   await sättMål(env, id, flera(f, "targets"));
+  await sättPrompterFörAvsändare(env.DB, id, flera(f, "prompts"));
   return nyckelSida(s, namn, nyckel, url);
 }
 
@@ -643,6 +662,7 @@ async function ändraAvsändare(req: Request, env: Env, id: string): Promise<Res
   const r = await env.DB.prepare("UPDATE senders SET name = ? WHERE id = ?").bind(namn, id).run();
   if (!r.meta.changes) throw new EjFunnen();
   await sättMål(env, id, flera(f, "targets"));
+  await sättPrompterFörAvsändare(env.DB, id, flera(f, "prompts"));
   return medMeddelande("/admin/avsandare", `${namn} är sparad.`);
 }
 
@@ -707,7 +727,8 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL): 
 
 // ---------- Inställningar ----------
 
-function inställningsSida(s: Inställningar, url: URL, fel: string | null = null, status = 200): Response {
+async function inställningsSida(env: Env, s: Inställningar, url: URL, fel: string | null = null, status = 200): Promise<Response> {
+  const { results: leverantörer } = await env.DB.prepare("SELECT id, name FROM providers ORDER BY name").all<{ id: string; name: string }>();
   return htmlSvar(
     sida(
       s,
@@ -732,6 +753,18 @@ function inställningsSida(s: Inställningar, url: URL, fel: string | null = nul
             (d) => html`<label class="val"><input type="checkbox" name="accepts" value="${d}"${raw(s.accepts.includes(d) ? " checked" : "")} /> ${DELNAMN[d]}</label>`,
           )}
           <p class="dim">Utan ljud blir sändningarna små; ljud i Apple Lossless tar ungefär 66 MB per timme.</p>
+          <h2>Fri fråga i chatten</h2>
+          <p class="dim">När någon skriver en egen fråga i stället för att välja en prompt. Bara avsändare som har minst en
+            chattprompt kan chatta. Tomt = samma leverantör och modell som deras första chattprompt.</p>
+          <label for="chat_provider">Leverantör</label>
+          <select id="chat_provider" name="chat_provider">
+            <option value="">Som första chattprompten</option>
+            ${leverantörer.map((l) => html`<option value="${l.id}"${raw(l.id === s.chatProvider ? " selected" : "")}>${l.name}</option>`)}
+          </select>
+          <label for="chat_model">Modell <span class="dim">(tom = leverantörens standard)</span></label>
+          <input id="chat_model" type="text" name="chat_model" value="${s.chatModel ?? ""}" />
+          <label for="chat_system">Systemtext <span class="dim">(tom = inbyggd; gäller också prompter utan egen systemtext)</span></label>
+          <textarea id="chat_system" name="chat_system" rows="4">${s.chatSystem}</textarea>
           <div class="rad"><button>Spara</button></div>
         </form>`,
       "/admin/installningar",
@@ -753,28 +786,31 @@ async function sparaInställningar(req: Request, env: Env, s: Inställningar): P
   const url = new URL(req.url);
   const f = await formulär(req);
   const namn = fält(f, "name").slice(0, 60);
-  if (!namn) return inställningsSida(s, url, "Mottagaren behöver ett namn.", 400);
+  if (!namn) return await inställningsSida(env, s, url, "Mottagaren behöver ett namn.", 400);
   const färg = fält(f, "color").toUpperCase();
-  if (!f.has("no_color") && !/^#[0-9A-F]{6}$/.test(färg)) return inställningsSida(s, url, "Färgen ska vara #RRGGBB.", 400);
+  if (!f.has("no_color") && !/^#[0-9A-F]{6}$/.test(färg)) return await inställningsSida(env, s, url, "Färgen ska vara #RRGGBB.", 400);
   const accepts = DELAR.filter((d) => flera(f, "accepts").includes(d));
-  if (!accepts.length) return inställningsSida(s, url, "Välj minst en del att ta emot.", 400);
+  if (!accepts.length) return await inställningsSida(env, s, url, "Välj minst en del att ta emot.", 400);
 
   const ikon = f.get("icon") as unknown;
   let ikonbytes: Uint8Array | null = null;
   if (ikon && typeof ikon === "object" && (ikon as File).size > 0) {
     const fil = ikon as File;
-    if (fil.size > STÖRSTA_IKON) return inställningsSida(s, url, "Loggan är större än 2 MB.", 400);
+    if (fil.size > STÖRSTA_IKON) return await inställningsSida(env, s, url, "Loggan är större än 2 MB.", 400);
     ikonbytes = new Uint8Array(await fil.arrayBuffer());
     const mått = pngStorlek(ikonbytes);
-    if (!mått) return inställningsSida(s, url, "Loggan ska vara en PNG.", 400);
+    if (!mått) return await inställningsSida(env, s, url, "Loggan ska vara en PNG.", 400);
     if (mått.bredd !== mått.höjd || mått.bredd < 256) {
-      return inställningsSida(s, url, `Loggan ska vara kvadratisk och minst 256 px (den är ${mått.bredd}×${mått.höjd}).`, 400);
+      return await inställningsSida(env, s, url, `Loggan ska vara kvadratisk och minst 256 px (den är ${mått.bredd}×${mått.höjd}).`, 400);
     }
   }
 
   await sättInställning(env.DB, "name", namn);
   await sättInställning(env.DB, "color", f.has("no_color") ? null : färg);
   await sättInställning(env.DB, "accepts", JSON.stringify(accepts));
+  await sättInställning(env.DB, "chat_provider", fält(f, "chat_provider") || null);
+  await sättInställning(env.DB, "chat_model", fält(f, "chat_model") || null);
+  await sättInställning(env.DB, "chat_system", fält(f, "chat_system") || null);
   if (ikonbytes) {
     await env.FILER.put(IKON_NYCKEL, ikonbytes, { httpMetadata: { contentType: "image/png" } });
     await sättInställning(env.DB, "icon", nu());

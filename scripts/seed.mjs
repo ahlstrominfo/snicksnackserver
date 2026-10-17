@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Lägger in ett mål "inbox" och en avsändare med alla mål, och skriver ut nyckeln en gång.
+// Lägger in ett mål "inbox" och en avsändare med alla mål och alla prompter, och skriver ut nyckeln en gång.
+// Migreringen 0002 ger en ny installation testleverantören och två prompter.
 //
 //   npm run seed                      lokalt (wrangler dev), avsändaren heter "Testavsändare"
 //   npm run seed -- "Anna" --remote   på Cloudflare
@@ -48,15 +49,17 @@ wrangler(
     `INSERT OR IGNORE INTO targets (id, name, grp, created_at) VALUES ('inbox', 'Inkorg', NULL, ${sql(nu)})`,
     `INSERT INTO senders (id, name, key_hash, key_hint, created_at) VALUES (${sql(id)}, ${sql(namn)}, ${sql(hash)}, ${sql(nyckel.slice(-4))}, ${sql(nu)})`,
     `INSERT INTO sender_targets (sender_id, target_id) SELECT ${sql(id)}, id FROM targets`,
+    `INSERT INTO sender_prompts (sender_id, prompt_id) SELECT ${sql(id)}, id FROM prompts`,
   ].join("; "),
 );
 
 console.log(`
-Avsändare: ${namn} (${id}), tilldelad alla mål
+Avsändare: ${namn} (${id}), tilldelad alla mål och prompter
 Nyckel:    ${nyckel}
 Länk:      snicksnack://receiver?url=${bas}&key=${nyckel}
 
 Prova:
   curl ${bas}/.well-known/snicksnack
   curl -H "Authorization: Bearer ${nyckel}" ${bas}/snicksnack/targets
+  curl -H "Authorization: Bearer ${nyckel}" ${bas}/snicksnack/summarize
 `);

@@ -11,6 +11,10 @@ export interface Inställningar {
   accepts: Del[];
   /** Tidpunkt då loggan laddades upp, eller null om det inte finns någon. */
   icon: string | null;
+  /** Fri fråga i chatten (utan prompt): leverantör, modell och systemtext. Tomt = första chattprompten. */
+  chatProvider: string | null;
+  chatModel: string | null;
+  chatSystem: string;
 }
 
 export const STANDARDNAMN = "Snicksnack-mottagare";
@@ -25,7 +29,15 @@ export async function hämtaInställningar(db: D1Database): Promise<Inställning
   } catch {
     // trasigt värde: alla delar
   }
-  return { name: m.get("name") || STANDARDNAMN, color: m.get("color") || null, accepts, icon: m.get("icon") || null };
+  return {
+    name: m.get("name") || STANDARDNAMN,
+    color: m.get("color") || null,
+    accepts,
+    icon: m.get("icon") || null,
+    chatProvider: m.get("chat_provider") || null,
+    chatModel: m.get("chat_model") || null,
+    chatSystem: m.get("chat_system") || "",
+  };
 }
 
 export async function sättInställning(db: D1Database, nyckel: string, värde: string | null): Promise<void> {
