@@ -1,14 +1,16 @@
-// Avsändarens personliga sida /min/<token>: agentnycklar för MCP och hur man kopplar en agent.
+// Avsändarens personliga sida /min/<token>: agentnycklar för MCP, inloggade OAuth-klienter och hur man kopplar en agent.
 // Länken är inloggningen; den syns för ägaren under Avsändare och kan bytas där.
 
 import { agentnycklar, mcpKommandon, skapaAgentnyckel, spärraAgentnyckel } from "./agenter";
 import { hämtaInställningar } from "./db";
+import { inloggningar, återkallaInloggning, type Inloggning } from "./oauth";
 import { html, htmlSvar, raw, type Raw } from "./html";
 import { FAVICON, fältrad, logga, rubrik, SKRIPT, STIL, tomt } from "./utseende";
 
 const HUVUDEN = { "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex" };
 
-function sida(mottagare: string, titel: string, innehåll: Raw): Raw {
+/** En sida utan adminens flikar (personliga sidan och OAuth-inloggningen). */
+export function enkelSida(mottagare: string, titel: string, innehåll: Raw): Raw {
   return html`<html lang="sv">
     <head>
       <meta charset="utf-8" />
@@ -42,9 +44,29 @@ export function instruktioner(origin: string, nyckel: string | null, omfång: st
     <h3>Cursor och andra MCP-klienter</h3>
     <pre class="text">${k.json}</pre>
     <div class="knappar" style="margin-top:8px"><button type="button" class="diskret liten" data-kopiera="${k.json}">Kopiera JSON</button></div>
-    <p class="tips" style="margin-top:14px">Adressen är <code>${k.adress}</code> (Streamable HTTP). ${omfång}
-      claude.ai kan inte kopplas än: den kräver OAuth, som servern inte har.</p>
+    <p class="tips" style="margin-top:14px">Adressen är <code>${k.adress}</code> (Streamable HTTP). ${omfång}</p>
+    <h3>claude.ai (Claude-appen)</h3>
+    <p>Inställningar → Kopplare → Lägg till egen kopplare. Klistra in adressen <code>${k.adress}</code> och lämna
+      client id och secret tomma. Claude öppnar en inloggning här: logga in med länken till Din sida (eller som ägare
+      med adminlösenordet). Ingen agentnyckel behövs.</p>
+    <div class="knappar" style="margin-top:8px"><button type="button" class="diskret liten" data-kopiera="${k.adress}">Kopiera adressen</button></div>
   </div>`;
+}
+
+/** Listan med inloggade OAuth-klienter; vem visas för ägaren (avsändarens namn). */
+export function inloggningslista(lista: Inloggning[], åtgärd: (id: string) => string, vem: (owner: string) => string | null = () => null): Raw {
+  if (!lista.length) return html`<p class="dim" style="margin:0 6px 14px">Inga klienter inloggade.</p>`;
+  return html`<div class="lista">${lista.map((g) => {
+    const v = vem(g.owner);
+    return html`<div class="nyckelrad">
+      <div class="radtext">
+        <div class="radtopp"><span class="namn">${g.client_name}</span></div>
+        <div class="meta">${v ? html`${v} · ` : ""}inloggad ${tid(g.created_at)} · senast använd ${tid(g.last_used_at)}</div>
+      </div>
+      <form method="post" action="${åtgärd(g.id)}" onsubmit="return confirm('Återkalla inloggningen? Klienten slutar fungera direkt.')">
+        <button class="farlig liten">Återkalla</button></form>
+    </div>`;
+  })}</div>`;
 }
 
 interface Avsändarrad {
@@ -62,7 +84,7 @@ export async function minSida(req: Request, env: Env, delar: string[]): Promise<
     : null;
   if (!avs || !avs.key_hash) {
     return htmlSvar(
-      sida(s.name, "Finns inte", html`<div class="lugn">${rubrik("Länken fungerar inte")}${tomt("Be den som driver mottagaren om en ny länk.")}</div>`),
+      enkelSida(s.name, "Finns inte", html`<div class="lugn">${rubrik("Länken fungerar inte")}${tomt("Be den som driver mottagaren om en ny länk.")}</div>`),
       404,
       HUVUDEN,
     );
@@ -71,12 +93,19 @@ export async function minSida(req: Request, env: Env, delar: string[]): Promise<
 
   if (req.method === "POST") {
     const ursprung = req.headers.get("Origin");
-    if (ursprung && ursprung !== url.origin) return htmlSvar(sida(s.name, "Nekad", rubrik("Nekad")), 403, HUVUDEN);
+    if (ursprung && ursprung !== url.origin) return htmlSvar(enkelSida(s.name, "Nekad", rubrik("Nekad")), 403, HUVUDEN);
     if (rest.length === 1 && rest[0] === "agenter") {
       const f = await req.formData().catch(() => new FormData());
       const namn = String(f.get("name") ?? "").trim() || "Agent";
       const nyckel = await skapaAgentnyckel(env.DB, avs.id, namn);
       return visa(env, s.name, avs, url, bas, { namn, nyckel });
+    }
+    if (rest.length === 3 && rest[0] === "klienter" && rest[2] === "aterkalla") {
+      const ok = await återkallaInloggning(env.DB, rest[1], avs.id);
+      return new Response(null, {
+        status: 303,
+        headers: { Location: `${bas}?meddelande=${encodeURIComponent(ok ? "Inloggningen är återkallad." : "Inloggningen fanns inte.")}`, ...HUVUDEN },
+      });
     }
     if (rest.length === 3 && rest[0] === "agenter" && rest[2] === "sparra") {
       const ok = await spärraAgentnyckel(env.DB, rest[1], avs.id);
@@ -85,9 +114,9 @@ export async function minSida(req: Request, env: Env, delar: string[]): Promise<
         headers: { Location: `${bas}?meddelande=${encodeURIComponent(ok ? "Nyckeln är spärrad." : "Nyckeln fanns inte.")}`, ...HUVUDEN },
       });
     }
-    return htmlSvar(sida(s.name, "Finns inte", rubrik("Finns inte")), 404, HUVUDEN);
+    return htmlSvar(enkelSida(s.name, "Finns inte", rubrik("Finns inte")), 404, HUVUDEN);
   }
-  if (rest.length) return htmlSvar(sida(s.name, "Finns inte", rubrik("Finns inte")), 404, HUVUDEN);
+  if (rest.length) return htmlSvar(enkelSida(s.name, "Finns inte", rubrik("Finns inte")), 404, HUVUDEN);
   return visa(env, s.name, avs, url, bas, null);
 }
 
@@ -99,15 +128,16 @@ async function visa(
   bas: string,
   ny: { namn: string; nyckel: string } | null,
 ): Promise<Response> {
-  const [nycklar, antal] = await Promise.all([
+  const [nycklar, antal, klienter] = await Promise.all([
     agentnycklar(env.DB, avs.id),
     env.DB.prepare("SELECT COUNT(*) AS n FROM snacks WHERE sender_id = ?").bind(avs.id).first<{ n: number }>(),
+    inloggningar(env.DB, avs.id),
   ]);
   const n = antal?.n ?? 0;
   const besked = url.searchParams.get("meddelande");
   const aktiva = nycklar.filter((k) => !k.revoked_at);
   return htmlSvar(
-    sida(
+    enkelSida(
       mottagare,
       avs.name,
       html`${rubrik(avs.name, n === 0 ? `Inga snack skickade till ${mottagare} än.` : n === 1 ? `Ett snack skickat till ${mottagare}.` : `${n} snack skickade till ${mottagare}.`)}
@@ -146,7 +176,10 @@ async function visa(
               <div class="knappar"><button>Skapa och visa nyckel</button></div>
             </form>
           </div>
-        </details>`,
+        </details>
+        <h2>Inloggade klienter</h2>
+        <p class="dim" style="margin:0 6px 12px">Klienter som loggat in med din länk, till exempel claude.ai.</p>
+        ${inloggningslista(klienter, (id) => `${bas}/klienter/${encodeURIComponent(id)}/aterkalla`)}`,
     ),
     200,
     HUVUDEN,

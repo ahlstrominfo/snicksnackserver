@@ -4,7 +4,8 @@ import { EjFunnen, fält, formulär, medMeddelande, meddelande, sida, tidpunkt }
 import { agentnycklar, skapaAgentnyckel, spärraAgentnyckel } from "./agenter";
 import type { Inställningar } from "./db";
 import { html, htmlSvar, raw } from "./html";
-import { instruktioner } from "./min";
+import { inloggningslista, instruktioner } from "./min";
+import { inloggningar, återkallaInloggning } from "./oauth";
 import { byggOmIndex } from "./sok";
 import { fältrad, rubrik, tomt } from "./utseende";
 
@@ -14,6 +15,10 @@ export async function adminAgenter(req: Request, env: Env, s: Inställningar, de
   if (delar.length === 3 && delar[2] === "sparra" && post) {
     if (!(await spärraAgentnyckel(env.DB, delar[1]))) throw new EjFunnen();
     return medMeddelande("/admin/agenter", "Nyckeln är spärrad.");
+  }
+  if (delar.length === 4 && delar[1] === "klienter" && delar[3] === "aterkalla" && post) {
+    if (!(await återkallaInloggning(env.DB, delar[2]))) throw new EjFunnen();
+    return medMeddelande("/admin/agenter", "Inloggningen är återkallad.");
   }
   if (delar.length === 2 && delar[1] === "sokindex" && post) {
     const r = await byggOmIndex(env);
@@ -32,10 +37,11 @@ async function skapa(req: Request, env: Env, s: Inställningar, url: URL): Promi
 const tid = (iso: string | null) => (iso ? tidpunkt(iso) : "aldrig");
 
 async function visa(env: Env, s: Inställningar, url: URL, ny: { namn: string; nyckel: string } | null): Promise<Response> {
-  const [nycklar, { results: avsändare }, fts] = await Promise.all([
+  const [nycklar, { results: avsändare }, fts, klienter] = await Promise.all([
     agentnycklar(env.DB),
     env.DB.prepare("SELECT id, name FROM senders").all<{ id: string; name: string }>(),
     env.DB.prepare("SELECT (SELECT COUNT(*) FROM snacks_fts) AS i, (SELECT COUNT(*) FROM snacks) AS s").first<{ i: number; s: number }>(),
+    inloggningar(env.DB),
   ]);
   const namn = new Map(avsändare.map((a) => [a.id, a.name]));
   const ägarens = nycklar.filter((k) => k.owner === "owner");
@@ -56,7 +62,7 @@ async function visa(env: Env, s: Inställningar, url: URL, ny: { namn: string; n
     sida(
       s,
       "Agenter",
-      html`${rubrik("Agenter", "AI-agenter (Claude Code, Cursor …) kan läsa och söka i snacken via MCP med en agentnyckel.")}
+      html`${rubrik("Agenter", "AI-agenter (Claude Code, Cursor, claude.ai …) kan läsa och söka i snacken via MCP, med en agentnyckel eller en inloggning (OAuth).")}
         ${meddelande(url)}
         ${ny
           ? html`<p class="meddelande">Nyckeln för ${ny.namn} visas bara nu. Den ser alla snack.</p>
@@ -80,6 +86,14 @@ async function visa(env: Env, s: Inställningar, url: URL, ny: { namn: string; n
         ${deras.length
           ? html`<div class="lista">${deras.map((k) => rad(k, namn.get(k.owner) ?? k.owner))}</div>`
           : html`<p class="dim" style="margin:0 6px">Avsändarna skapar sina egna på sin personliga sida (länken finns under Avsändare).</p>`}
+        <h2>Inloggade klienter</h2>
+        <p class="dim" style="margin:0 6px 12px">Klienter som loggat in med OAuth (claude.ai:s kopplare): som ägaren ser de allt,
+          som en avsändare bara dennes snack.</p>
+        ${inloggningslista(
+          klienter,
+          (id) => `/admin/agenter/klienter/${encodeURIComponent(id)}/aterkalla`,
+          (o) => (o === "owner" ? "Ägaren" : (namn.get(o) ?? o)),
+        )}
         <h2>Sökindex</h2>
         <div class="kort">
           <p>${fts?.i ?? 0} av ${fts?.s ?? 0} snack finns i sökindexet. Nya snack läggs in när de kommer; bygg om för dem som kom före sökningen.</p>

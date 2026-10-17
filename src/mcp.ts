@@ -1,10 +1,12 @@
-// MCP-servern på /mcp (Streamable HTTP, statelös, JSON-svar) för agenter med en agentnyckel.
+// MCP-servern på /mcp (Streamable HTTP, statelös, JSON-svar) för agenter med en agentnyckel eller en OAuth-token
+// (claude.ai:s kopplare, se oauth.ts).
 // Verktygen läser snacken i D1 och R2 inom nyckelns omfång. Ljudet nås via en signerad länk till /ljud/<token>.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { agentFrånAnrop, type Omfång } from "./agenter";
+import { oauthFrånAnrop, obehörig } from "./oauth";
 import { transkriptText, talarnamn, type Transkript } from "./ai/transkript";
 import { hämtaInställningar } from "./db";
 import { signera, verifiera } from "./krypto";
@@ -16,19 +18,22 @@ const LJUDLÄNK_SEKUNDER = 3600;
 // ---------- Ingång ----------
 
 export async function mcp(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  // Agentnyckeln (Claude Code, Cursor …) först; allt annat prövas som OAuth-token.
+  const huvud = req.headers.get("Authorization") ?? "";
+  const harToken = /^Bearer\s+\S/i.test(huvud);
+  const omfång = /^Bearer\s+ssk_agent_/i.test(huvud)
+    ? await agentFrånAnrop(req, env, ctx)
+    : harToken
+      ? await oauthFrånAnrop(req, env, ctx)
+      : null;
+  if (!omfång) return obehörig(req, harToken);
   if (req.method === "GET" || req.method === "DELETE") {
-    return new Response("Snicksnack MCP: POST JSON-RPC hit med Authorization: Bearer ssk_agent_…\n", {
+    return new Response("Snicksnack MCP: POST JSON-RPC hit.\n", {
       status: 405,
       headers: { Allow: "POST", "Content-Type": "text/plain; charset=utf-8" },
     });
   }
   if (req.method !== "POST") return fel(405, "Bara POST");
-  const omfång = await agentFrånAnrop(req, env, ctx);
-  if (!omfång) {
-    return json({ jsonrpc: "2.0", error: { code: -32001, message: "Ogiltig agentnyckel" }, id: null }, 401, {
-      "WWW-Authenticate": 'Bearer realm="snicksnack"',
-    });
-  }
   const s = await hämtaInställningar(env.DB);
   const server = new McpServer(
     { name: "snicksnack", title: s.name, version: "1.0.0" },

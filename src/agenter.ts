@@ -15,8 +15,11 @@ export interface Agentnyckel {
   revoked_at: string | null;
 }
 
-/** Omfånget för ett anrop: ägaren ser allt, en avsändare bara sina snack. */
-export type Omfång = { ägare: true; nyckel: string } | { ägare: false; avsändare: string; nyckel: string };
+/** Omfånget för ett anrop: ägaren ser allt, en avsändare bara sina snack. nyckel är agentnyckelns eller
+ * OAuth-inloggningens id; klient är klientens namn för OAuth. */
+export type Omfång =
+  | { ägare: true; nyckel: string; klient?: string }
+  | { ägare: false; avsändare: string; nyckel: string; klient?: string };
 
 export function nyAgentnyckel(): string {
   return AGENTPREFIX + base64url(crypto.getRandomValues(new Uint8Array(32)));

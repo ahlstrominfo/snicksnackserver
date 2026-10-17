@@ -4,6 +4,7 @@
 import { admin } from "./admin";
 import { ljud, mcp } from "./mcp";
 import { minSida } from "./min";
+import { auktorisera, förfrågan, registrera, resursmetadata, servermetadata, token, återkallaToken } from "./oauth";
 import { chatta, listaPrompter, sammanfatta } from "./ai/anrop";
 import { fel, ikon, receive, targets, wellKnown } from "./protokoll";
 
@@ -15,6 +16,22 @@ export default {
       if (pathname === "/.well-known/snicksnack") {
         return metod === "GET" || metod === "HEAD" ? await wellKnown(req, env) : fel(405, "Bara GET");
       }
+      // OAuth för MCP-klienter (oauth.ts). Metadata, registrering och token får anropas från webbläsare (CORS).
+      const oauthVäg =
+        pathname === "/.well-known/oauth-protected-resource" || pathname === "/.well-known/oauth-protected-resource/mcp"
+          ? "resurs"
+          : pathname === "/.well-known/oauth-authorization-server" || pathname === "/.well-known/oauth-authorization-server/mcp"
+            ? "server"
+            : ["/register", "/token", "/revoke"].includes(pathname)
+              ? pathname.slice(1)
+              : null;
+      if (oauthVäg && metod === "OPTIONS") return förfrågan();
+      if (oauthVäg === "resurs") return metod === "GET" || metod === "HEAD" ? resursmetadata(req) : fel(405, "Bara GET");
+      if (oauthVäg === "server") return metod === "GET" || metod === "HEAD" ? servermetadata(req) : fel(405, "Bara GET");
+      if (oauthVäg === "register") return metod === "POST" ? await registrera(req, env) : fel(405, "Bara POST");
+      if (oauthVäg === "token") return metod === "POST" ? await token(req, env) : fel(405, "Bara POST");
+      if (oauthVäg === "revoke") return metod === "POST" ? await återkallaToken(req, env) : fel(405, "Bara POST");
+      if (pathname === "/authorize") return await auktorisera(req, env);
       if (pathname === "/snicksnack/targets") {
         return metod === "GET" ? await targets(req, env) : fel(405, "Bara GET");
       }

@@ -36,8 +36,9 @@ export async function wellKnown(req: Request, env: Env): Promise<Response> {
   };
   if (sorter.has("summary")) svar.summarize = `${origin}/snicksnack/summarize`;
   if (sorter.has("chat")) svar.chat = `${origin}/snicksnack/chat`;
-  // Serverns tillägg (inte en del av appens protokoll): MCP för agenter.
+  // Serverns tillägg (inte en del av appens protokoll): MCP för agenter, med agentnyckel eller OAuth.
   svar.mcp = `${origin}/mcp`;
+  svar.mcp_auth = ["api-key", "oauth"];
   if (s.color) svar.color = s.color;
   // Versionen i adressen gör att appen hämtar loggan igen när den byts (appen hämtar bara när adressen ändras).
   if (s.icon) svar.icon = `${origin}/icon.png?v=${ikonversion(s.icon)}`;

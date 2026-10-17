@@ -64,7 +64,11 @@ export async function admin(req: Request, env: Env): Promise<Response> {
 
   if (väg === "/admin/login") return req.method === "POST" ? loggaIn(req, env, url) : loginSida(url);
   if (väg === "/admin/logout" && req.method === "POST") {
-    return omdirigera("/admin/login", { "Set-Cookie": cookie(url, "", 0) });
+    // Äldre inloggningar har cookien på /admin; ta bort båda.
+    const h = new Headers({ Location: "/admin/login", "Cache-Control": "no-store" });
+    h.append("Set-Cookie", cookie(url, "", 0));
+    h.append("Set-Cookie", cookie(url, "", 0, "/admin"));
+    return new Response(null, { status: 303, headers: h });
   }
 
   if (!(await giltigSession(lösen, läsCookie(req, COOKIE)))) {
@@ -135,9 +139,15 @@ export async function admin(req: Request, env: Env): Promise<Response> {
 
 // ---------- Hjälp ----------
 
-function cookie(url: URL, värde: string, maxAge: number): string {
+// Path=/ så att inloggningen för OAuth (/authorize) också ser att ägaren är inloggad.
+function cookie(url: URL, värde: string, maxAge: number, väg = "/"): string {
   const säker = url.protocol === "https:" ? "; Secure" : "";
-  return `${COOKIE}=${värde}; Path=/admin; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${säker}`;
+  return `${COOKIE}=${värde}; Path=${väg}; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${säker}`;
+}
+
+/** Om anropet har en giltig admin-cookie. */
+export async function adminInloggad(req: Request, env: Env): Promise<boolean> {
+  return !!env.ADMIN_PASSWORD && giltigSession(env.ADMIN_PASSWORD, läsCookie(req, COOKIE));
 }
 
 export function omdirigera(till: string, huvuden: Record<string, string> = {}): Response {
