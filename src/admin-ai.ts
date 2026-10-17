@@ -5,6 +5,7 @@ import type { Prompt } from "./ai/anrop";
 import { MODELLFÖRSLAG, STANDARDMODELL, TYPER, type Leverantör, type Typ } from "./ai/leverantorer";
 import { MÅL_ID, nu, slug, type Inställningar } from "./db";
 import { html, htmlSvar, raw, type Raw } from "./html";
+import { fältrad, rubrik, tomt, valgrupp, växel } from "./utseende";
 import { kryptera, maskera } from "./krypto";
 
 const TYPNAMN: Record<Typ, string> = {
@@ -12,6 +13,8 @@ const TYPNAMN: Record<Typ, string> = {
   openai: "OpenAI-kompatibel (OpenAI, Mistral, Azure, Ollama …)",
   test: "Test (ingen AI, ingen nyckel)",
 };
+
+const KORTNAMN: Record<Typ, string> = { anthropic: "Anthropic", openai: "OpenAI-kompatibel", test: "Test" };
 
 /** Hanterar /admin/leverantorer… och /admin/prompter…; null = finns inte. */
 export async function adminAi(req: Request, env: Env, s: Inställningar, delar: string[], url: URL): Promise<Response | null> {
@@ -39,11 +42,11 @@ export async function allaPrompter(db: D1Database): Promise<Prompt[]> {
 const sortnamn = (p: { kind: string; live: number }) => (p.kind === "chat" ? "chatt" : "sammanfattning") + (p.live ? ", live" : "");
 
 export function promptVal(prompter: Prompt[], valda: string[]): Raw {
-  if (!prompter.length) return html`<p class="dim">Inga prompter än. <a href="/admin/prompter">Skapa en prompt</a>.</p>`;
+  if (!prompter.length) return html`<span class="tips">Inga prompter än. <a href="/admin/prompter">Skapa en prompt</a>.</span>`;
   return html`${prompter.map(
     (p) =>
       html`<label class="val"><input type="checkbox" name="prompts" value="${p.id}"${raw(valda.includes(p.id) ? " checked" : "")} />
-        ${p.name} <span class="dim">(${sortnamn(p)})</span></label>`,
+        ${p.name} <span class="dim">${sortnamn(p)}</span></label>`,
   )}`;
 }
 
@@ -80,58 +83,79 @@ async function leverantörSida(env: Env, s: Inställningar, url: URL, fel: strin
     TYPER.map((t) => html`<option value="${t}"${raw(t === vald ? " selected" : "")}>${TYPNAMN[t]}</option>`);
   const utanSecret = env.KEY_SECRET
     ? ""
-    : html`<p class="fel">KEY_SECRET saknas: API-nycklar går inte att spara. Kör <code>npx wrangler secret put KEY_SECRET</code>.</p>`;
+    : html`<p class="fel">KEY_SECRET saknas, så API-nycklar går inte att spara. Kör <code>npx wrangler secret put KEY_SECRET</code>.</p>`;
+  const tal = (n: number) => n.toLocaleString("sv-SE");
 
   return htmlSvar(
     sida(
       s,
       "Leverantörer",
-      html`<h1>Leverantörer</h1>
-        <p class="dim">Var AI-anropen går. Nycklarna sparas krypterade och visas aldrig igen; lämna fältet tomt för att behålla
-          den sparade.</p>
+      html`${rubrik("Leverantörer", "Var AI-anropen går. Nycklarna sparas krypterade och visas aldrig igen.")}
         ${meddelande(url)} ${felruta(fel)} ${utanSecret} ${modellista()}
-        ${leverantörer.map(
-          (l) => html`<div class="kort">
-            <form method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}">
-              <div><code>${l.id}</code> <span class="dim">· ${TYPNAMN[l.type]} · ${promptantal.get(l.id) ?? 0} prompter
-                ${l.type !== "test" ? html` · nyckel ${l.key_hint ?? "saknas"}` : ""}</span></div>
-              <label>Namn</label><input type="text" name="name" value="${l.name}" required />
-              <label>Typ</label><select name="type">${typval(l.type)}</select>
-              <label>Bas-URL <span class="dim">(bara OpenAI-kompatibel; tom = https://api.openai.com/v1)</span></label>
-              <input type="text" name="base_url" value="${l.base_url ?? ""}" placeholder="https://api.mistral.ai/v1" />
-              <label>Standardmodell <span class="dim">(tom = ${STANDARDMODELL[l.type]})</span></label>
-              <input type="text" name="model" value="${l.model ?? ""}" list="modeller" />
-              ${l.type !== "test"
-                ? html`<label>API-nyckel</label>
-                    <input type="password" name="api_key" autocomplete="off" placeholder="${l.key_hint ? `oförändrad (${l.key_hint})` : "ingen sparad"}" />
-                    ${l.key_hint ? html`<label class="val"><input type="checkbox" name="remove_key" /> Ta bort nyckeln</label>` : ""}`
-                : ""}
-              <div class="rad"><button>Spara</button></div>
+        ${leverantörer.length
+          ? html`<div class="lista">
+              ${leverantörer.map(
+                (l, i) => html`<details class="post">
+                  <summary>
+                    <div class="radtext">
+                      <div class="namn">${l.name}</div>
+                      <div class="meta">${KORTNAMN[l.type]} · ${promptantal.get(l.id) ?? 0} prompter${l.type !== "test" ? ` · nyckel ${l.key_hint ?? "saknas"}` : ""}</div>
+                    </div>
+                    <span class="chev">›</span>
+                  </summary>
+                  <div class="postinnehall">
+                    <form id="ta-bort-lev-${i}" method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}/ta-bort"
+                      onsubmit="return confirm('Ta bort leverantören?')"></form>
+                    <form method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}">
+                      ${fältrad("Namn", html`<input type="text" name="name" value="${l.name}" required />`)}
+                      ${fältrad("Typ", html`<select name="type">${typval(l.type)}</select>`)}
+                      ${fältrad(
+                        "Bas-URL",
+                        html`<input type="text" name="base_url" value="${l.base_url ?? ""}" placeholder="https://api.openai.com/v1" />`,
+                        "Bara för OpenAI-kompatibla.",
+                      )}
+                      ${fältrad("Standardmodell", html`<input type="text" name="model" value="${l.model ?? ""}" list="modeller" placeholder="${STANDARDMODELL[l.type]}" />`)}
+                      ${l.type !== "test"
+                        ? html`${fältrad(
+                            "API-nyckel",
+                            html`<input type="password" name="api_key" autocomplete="off" placeholder="${l.key_hint ? `Oförändrad (${l.key_hint})` : "Ingen sparad"}" />`,
+                            l.key_hint ? "Lämna tomt för att behålla den sparade." : null,
+                          )}
+                          ${l.key_hint ? växel("remove_key", "Ta bort nyckeln", false) : ""}`
+                        : ""}
+                      <p class="tips">Id <code>${l.id}</code></p>
+                      <div class="knappar">
+                        <button>Spara</button>
+                        <span class="hoger"><button class="farlig" form="ta-bort-lev-${i}">Ta bort</button></span>
+                      </div>
+                    </form>
+                  </div>
+                </details>`,
+              )}
+            </div>`
+          : tomt("Ingen leverantör än. Lägg till en så kan prompterna nå en AI.")}
+        <details class="lista post ny"${raw(!leverantörer.length || fel ? " open" : "")}>
+          <summary><span class="plus">+</span><span class="radtext">Ny leverantör</span></summary>
+          <div class="postinnehall">
+            <form method="post" action="/admin/leverantorer">
+              ${fältrad("Namn", html`<input type="text" name="name" required placeholder="Claude" />`)}
+              ${fältrad("Id", html`<input type="text" name="id" placeholder="Av namnet, t.ex. claude" />`, "Valfritt.")}
+              ${fältrad("Typ", html`<select name="type">${typval("anthropic")}</select>`)}
+              ${fältrad("Bas-URL", html`<input type="text" name="base_url" placeholder="https://api.openai.com/v1" />`, "Bara för OpenAI-kompatibla.")}
+              ${fältrad("Standardmodell", html`<input type="text" name="model" list="modeller" placeholder="${STANDARDMODELL.anthropic}" />`)}
+              ${fältrad("API-nyckel", html`<input type="password" name="api_key" autocomplete="off" />`)}
+              <div class="knappar"><button>Skapa leverantör</button></div>
             </form>
-            <form method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}/ta-bort" class="rad"
-              onsubmit="return confirm('Ta bort leverantören?')">
-              <button class="farlig">Ta bort</button>
-            </form>
-          </div>`,
-        )}
-        <h2>Ny leverantör</h2>
-        <form method="post" action="/admin/leverantorer" class="kort">
-          <label>Namn</label><input type="text" name="name" required placeholder="Claude" />
-          <label>Id <span class="dim">(valfritt; annars av namnet)</span></label><input type="text" name="id" placeholder="claude" />
-          <label>Typ</label><select name="type">${typval("anthropic")}</select>
-          <label>Bas-URL <span class="dim">(bara OpenAI-kompatibel)</span></label>
-          <input type="text" name="base_url" placeholder="https://api.openai.com/v1" />
-          <label>Standardmodell</label><input type="text" name="model" list="modeller" placeholder="${STANDARDMODELL.anthropic}" />
-          <label>API-nyckel</label><input type="password" name="api_key" autocomplete="off" />
-          <div class="rad"><button>Skapa leverantör</button></div>
-        </form>
-        <h2>Förbrukning, 30 dagar</h2>
+          </div>
+        </details>
+        <h2>Förbrukning, 30 dagar <span class="dim">· tokens in och ut</span></h2>
         ${användning.length
-          ? html`<div class="tabell"><table><thead><tr><th>Leverantör</th><th>Modell</th><th>Anrop</th><th>Tokens in</th><th>Tokens ut</th></tr></thead>
+          ? html`<div class="lista tabell"><table>
+              <thead><tr><th>Leverantör</th><th>Modell</th><th class="tal">Anrop</th><th class="tal">In</th><th class="tal">Ut</th></tr></thead>
               <tbody>${användning.map(
-                (r) => html`<tr><td>${r.provider_id}</td><td>${r.model}</td><td>${r.anrop}</td><td>${r.tin}</td><td>${r.tut}</td></tr>`,
+                (r) => html`<tr><td>${r.provider_id}</td><td>${r.model}</td><td class="tal">${tal(r.anrop)}</td><td class="tal">${tal(r.tin)}</td><td class="tal">${tal(r.tut)}</td></tr>`,
               )}</tbody></table></div>`
-          : html`<p class="dim">Inga anrop än.</p>`}`,
+          : html`<div class="kort"><p class="tips" style="margin:0">Inga anrop de senaste 30 dagarna.</p></div>`}`,
       "/admin/leverantorer",
     ),
     status,
@@ -220,62 +244,81 @@ async function promptSida(env: Env, s: Inställningar, url: URL, fel: string | n
     env.DB.prepare("SELECT id, name, key_hint FROM senders ORDER BY name").all<{ id: string; name: string; key_hint: string | null }>(),
     env.DB.prepare("SELECT sender_id, prompt_id FROM sender_prompts").all<{ sender_id: string; prompt_id: string }>(),
   ]);
+  const levNamn = new Map(leverantörer.map((l) => [l.id, l.name]));
   const levVal = (vald: string) =>
     leverantörer.map((l) => html`<option value="${l.id}"${raw(l.id === vald ? " selected" : "")}>${l.name}</option>`);
   const avsVal = (valda: string[]) =>
     avsändare.length
       ? avsändare.map(
           (a) => html`<label class="val"><input type="checkbox" name="senders" value="${a.id}"${raw(valda.includes(a.id) ? " checked" : "")} />
-            ${a.name}${a.key_hint ? "" : html` <span class="dim">(spärrad)</span>`}</label>`,
+            ${a.name}${a.key_hint ? "" : html` <span class="dim">spärrad</span>`}</label>`,
         )
-      : html`<p class="dim">Inga avsändare än.</p>`;
+      : html`<span class="tips">Inga avsändare än.</span>`;
   const sortVal = (vald: string) =>
-    html`<option value="summary"${raw(vald === "summary" ? " selected" : "")}>Sammanfattning (summarize)</option>
+    html`<option value="summary"${raw(vald === "summary" ? " selected" : "")}>Sammanfattning</option>
       <option value="chat"${raw(vald === "chat" ? " selected" : "")}>Chatt (snabbval)</option>`;
 
   const fälten = (p: Partial<Prompt>, valda: string[]) => html`
-    <label>Namn</label><input type="text" name="name" value="${p.name ?? ""}" required />
-    <label>Beskrivning <span class="dim">(visas i appen)</span></label><input type="text" name="description" value="${p.description ?? ""}" />
-    <label>Sort</label><select name="kind">${sortVal(p.kind ?? "summary")}</select>
-    <div><label class="val"><input type="checkbox" name="live"${raw(p.live ? " checked" : "")} /> Får användas under pågående inspelning (live)</label></div>
-    <label>Leverantör</label><select name="provider">${levVal(p.provider_id ?? leverantörer[0]?.id ?? "")}</select>
-    <label>Modell <span class="dim">(tom = leverantörens standard)</span></label><input type="text" name="model" value="${p.model ?? ""}" list="modeller" />
-    <label>Systemtext <span class="dim">(tom = mottagarens, se Inställningar)</span></label>
-    <textarea name="system" rows="3">${p.system ?? ""}</textarea>
-    <label>Användartext <span class="dim">(sammanfattning: instruktionen som ger avsnitten; chatt: snabbvalets fråga)</span></label>
-    <textarea name="user_text" rows="4" required>${p.user_text ?? ""}</textarea>
-    <label>Avsändare som får använda den</label>${avsVal(valda)}`;
+    ${fältrad("Namn", html`<input type="text" name="name" value="${p.name ?? ""}" required />`)}
+    ${fältrad("Beskrivning", html`<input type="text" name="description" value="${p.description ?? ""}" />`, "Visas i appen.")}
+    ${fältrad("Sort", html`<select name="kind">${sortVal(p.kind ?? "summary")}</select>`)}
+    ${växel("live", "Får användas under pågående inspelning", !!p.live)}
+    ${fältrad("Leverantör", html`<select name="provider">${levVal(p.provider_id ?? leverantörer[0]?.id ?? "")}</select>`)}
+    ${fältrad("Modell", html`<input type="text" name="model" value="${p.model ?? ""}" list="modeller" placeholder="Leverantörens standard" />`)}
+    ${fältrad("Systemtext", html`<textarea name="system" rows="3" placeholder="Mottagarens, se Inställningar">${p.system ?? ""}</textarea>`)}
+    ${fältrad(
+      "Användartext",
+      html`<textarea name="user_text" rows="5" required>${p.user_text ?? ""}</textarea>`,
+      "Sammanfattning: instruktionen som ger avsnitten. Chatt: snabbvalets fråga.",
+    )}
+    ${valgrupp("Vilka får använda den", avsVal(valda))}`;
 
   return htmlSvar(
     sida(
       s,
       "Prompter",
-      html`<h1>Prompter</h1>
-        <p class="dim">Sammanfattningar och chattens snabbval som avsändarna kan använda i Snicksnack. Transkriptet och
-          anteckningen läggs alltid i systemprompten.</p>
+      html`${rubrik("Prompter", "Sammanfattningar och snabbfrågor som avsändarna kan välja i appen. Transkriptet skickas alltid med.")}
         ${meddelande(url)} ${felruta(fel)} ${modellista()}
-        ${prompter.map(
-          (p) => html`<div class="kort">
-            <form method="post" action="/admin/prompter/${encodeURIComponent(p.id)}">
-              <div><code>${p.id}</code> <span class="dim">· ${sortnamn(p)}</span></div>
-              ${fälten(p, tilldelade.filter((t) => t.prompt_id === p.id).map((t) => t.sender_id))}
-              <div class="rad"><button>Spara</button></div>
-            </form>
-            <form method="post" action="/admin/prompter/${encodeURIComponent(p.id)}/ta-bort" class="rad"
-              onsubmit="return confirm('Ta bort prompten?')">
-              <button class="farlig">Ta bort</button>
-            </form>
-          </div>`,
-        )}
-        ${prompter.length ? "" : html`<p class="dim">Inga prompter än.</p>`}
-        <h2>Ny prompt</h2>
+        ${prompter.length
+          ? html`<div class="lista">
+              ${prompter.map((p, i) => {
+                const valda = tilldelade.filter((t) => t.prompt_id === p.id).map((t) => t.sender_id);
+                return html`<details class="post">
+                  <summary>
+                    <div class="radtext">
+                      <div class="namn">${p.name}</div>
+                      <div class="meta">${sortnamn(p)} · ${levNamn.get(p.provider_id) ?? p.provider_id} · ${valda.length} avsändare</div>
+                    </div>
+                    <span class="chev">›</span>
+                  </summary>
+                  <div class="postinnehall">
+                    <form id="ta-bort-prompt-${i}" method="post" action="/admin/prompter/${encodeURIComponent(p.id)}/ta-bort"
+                      onsubmit="return confirm('Ta bort prompten?')"></form>
+                    <form method="post" action="/admin/prompter/${encodeURIComponent(p.id)}">
+                      ${fälten(p, valda)}
+                      <p class="tips">Id <code>${p.id}</code></p>
+                      <div class="knappar">
+                        <button>Spara</button>
+                        <span class="hoger"><button class="farlig" form="ta-bort-prompt-${i}">Ta bort</button></span>
+                      </div>
+                    </form>
+                  </div>
+                </details>`;
+              })}
+            </div>`
+          : tomt("Inga prompter än.")}
         ${leverantörer.length
-          ? html`<form method="post" action="/admin/prompter" class="kort">
-              <label>Id <span class="dim">(valfritt; annars av namnet)</span></label><input type="text" name="id" placeholder="beslut" />
-              ${fälten({}, [])}
-              <div class="rad"><button>Skapa prompt</button></div>
-            </form>`
-          : html`<p class="dim"><a href="/admin/leverantorer">Skapa en leverantör</a> först.</p>`}`,
+          ? html`<details class="lista post ny"${raw(!prompter.length || fel ? " open" : "")}>
+              <summary><span class="plus">+</span><span class="radtext">Ny prompt</span></summary>
+              <div class="postinnehall">
+                <form method="post" action="/admin/prompter">
+                  ${fälten({}, [])}
+                  ${fältrad("Id", html`<input type="text" name="id" placeholder="Av namnet, t.ex. beslut" />`, "Valfritt.")}
+                  <div class="knappar"><button>Skapa prompt</button></div>
+                </form>
+              </div>
+            </details>`
+          : html`<div class="kort"><p class="tips" style="margin:0"><a href="/admin/leverantorer">Lägg till en leverantör</a> först.</p></div>`}`,
       "/admin/prompter",
     ),
     status,
