@@ -1,13 +1,5 @@
 # Snicksnack-mottagare
 
-> **In English.** A self-hosted receiver for Snicksnack, an iOS app that transcribes Swedish speech on the phone.
-> The app can send a recording (transcript, Markdown and audio) to a server the user chooses; this repo is the open
-> reference server, a single Cloudflare Worker with D1 and R2 that runs on the free plan. It can also summarize and
-> chat about recordings with an AI provider you configure (Claude or any OpenAI-compatible API), and acts as an MCP
-> server so agents such as Claude Code or claude.ai can search and read them. The protocol is documented in
-> [docs/protokoll.md](docs/protokoll.md) so you can build your own receiver in any language. Docs and code are in
-> Swedish; issues and pull requests are welcome in Swedish or English. MIT licensed.
-
 En öppen referensmottagare för Snicksnack, iOS-appen som gör tal till text på telefonen. Mottagaren är en Cloudflare
 Worker som tar emot snack (transkript, text och ljud) som skickas från appen och sparar dem på ditt eget
 Cloudflare-konto. Den går att köra på gratisplanen.
