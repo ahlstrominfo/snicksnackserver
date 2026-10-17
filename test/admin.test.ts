@@ -145,3 +145,53 @@ describe("admin-flödet", () => {
     expect(await r.text()).toContain("kvadratisk");
   });
 });
+
+describe("admin för extern AI", () => {
+  it("leverantör: nyckeln sparas krypterad och visas maskerad", async () => {
+    const kaka = await cookie();
+    const f = new URLSearchParams({ name: "Claude", type: "anthropic", model: "claude-sonnet-4-6", api_key: "sk-ant-hemlig-nyckel-1234" });
+    expect((await post("/admin/leverantorer", kaka, f)).status).toBe(303);
+    const rad = await env.DB.prepare("SELECT * FROM providers WHERE id = 'claude'").first<any>();
+    expect(rad.api_key).toMatch(/^v1\./);
+    expect(rad.api_key).not.toContain("hemlig");
+    expect(rad.key_hint).toBe("sk-ant-…1234");
+    const { dekryptera } = await import("../src/krypto");
+    expect(await dekryptera("testhemlighet", rad.api_key)).toBe("sk-ant-hemlig-nyckel-1234");
+
+    const sida = await (await anropa("/admin/leverantorer", { headers: { Cookie: kaka } })).text();
+    expect(sida).toContain("sk-ant-…1234");
+    expect(sida).not.toContain("hemlig-nyckel");
+
+    // Tomt fält behåller nyckeln
+    const ändra = new URLSearchParams({ name: "Claude 2", type: "anthropic", model: "" });
+    expect((await post("/admin/leverantorer/claude", kaka, ändra)).status).toBe(303);
+    expect((await env.DB.prepare("SELECT key_hint, name FROM providers WHERE id = 'claude'").first<any>())).toEqual({
+      key_hint: "sk-ant-…1234",
+      name: "Claude 2",
+    });
+  });
+
+  it("prompt: skapas med avsändare och syns i listan för dem", async () => {
+    const kaka = await cookie();
+    const nyckel = await skapaAvsändare("eva", []);
+    const f = new URLSearchParams({
+      name: "Beslut och åtgärder",
+      description: "Vad som beslutades",
+      kind: "summary",
+      provider: "test",
+      user_text: "Lista beslut och åtgärder.",
+    });
+    f.append("senders", "eva");
+    expect((await post("/admin/prompter", kaka, f)).status).toBe(303);
+    const lista = await (await anropa("/snicksnack/summarize", { headers: { Authorization: `Bearer ${nyckel}` } })).json<any>();
+    expect(lista.prompts).toEqual([
+      { id: "beslut-och-atgarder", name: "Beslut och åtgärder", description: "Vad som beslutades", kind: "summary", live: false },
+    ]);
+    // Leverantören går inte att ta bort medan en prompt använder den
+    const r = await post("/admin/leverantorer/test/ta-bort", kaka, new URLSearchParams());
+    expect(decodeURIComponent(r.headers.get("Location")!)).toContain("används av");
+    // Saknad användartext
+    const fel = new URLSearchParams({ name: "X", kind: "chat", provider: "test" });
+    expect((await post("/admin/prompter", kaka, fel)).status).toBe(400);
+  });
+});

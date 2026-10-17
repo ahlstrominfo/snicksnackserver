@@ -26,6 +26,9 @@ describe("well-known", () => {
       targets: `${BAS}/snicksnack/targets`,
       receive: `${BAS}/snicksnack/receive`,
       accepts: ["audio", "transcript", "text"],
+      // Migreringen 0002 lägger in en chattprompt och en sammanfattningsprompt.
+      summarize: `${BAS}/snicksnack/summarize`,
+      chat: `${BAS}/snicksnack/chat`,
     });
   });
 

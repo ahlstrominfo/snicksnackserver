@@ -9,7 +9,7 @@ export default defineConfig(async () => {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
           // Låg gräns i testerna så att 413 går att prova utan 100 MB.
-          bindings: { TEST_MIGRATIONS: migrations, ADMIN_PASSWORD: "testlösen", MAX_BYTES: "20000" },
+          bindings: { TEST_MIGRATIONS: migrations, ADMIN_PASSWORD: "testlösen", MAX_BYTES: "20000", AI_MAX_BYTES: "20000", KEY_SECRET: "testhemlighet" },
         },
       }),
     ],
