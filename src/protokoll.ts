@@ -34,7 +34,8 @@ export async function wellKnown(req: Request, env: Env): Promise<Response> {
     receive: `${origin}/snicksnack/receive`,
     accepts: s.accepts,
   };
-  if (sorter.has("summary")) svar.summarize = `${origin}/snicksnack/summarize`;
+  // Appen hämtar alla prompter, också chattens snabbval, från summarize: skicka den så fort någon prompt finns.
+  if (sorter.size > 0) svar.summarize = `${origin}/snicksnack/summarize`;
   if (sorter.has("chat")) svar.chat = `${origin}/snicksnack/chat`;
   // Serverns tillägg (inte en del av appens protokoll): MCP för agenter, med agentnyckel eller OAuth.
   svar.mcp = `${origin}/mcp`;
