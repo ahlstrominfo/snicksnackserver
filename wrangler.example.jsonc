@@ -1,0 +1,42 @@
+{
+  // Mall för Snicksnack-mottagarens Wrangler-konfiguration. Kopiera den till wrangler.jsonc (som inte checkas in)
+  // och fyll i dina egna värden:
+  //
+  //   cp wrangler.example.jsonc wrangler.jsonc
+  //
+  // Det som ska bytas är markerat med BYT. Allt annat kan stå kvar.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "snicksnack-mottagare",
+
+  // BYT (valfritt): ditt Cloudflare-kontos id (`npx wrangler whoami`). Behövs bara om du har flera konton;
+  // med ett konto väljer Wrangler det själv. Ta bort kommentartecknen för att använda raden.
+  // "account_id": "<ditt-konto-id>",
+
+  // BYT (valfritt): en egen domän som redan ligger i ditt Cloudflare-konto. Utan routes får Workern en adress
+  // på workers.dev, t.ex. https://snicksnack-mottagare.<ditt-namn>.workers.dev.
+  // "routes": [{ "pattern": "snack.example.se", "custom_domain": true }],
+
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Största kropp i byte. Workers tar högst 100 MB på gratis- och Pro-planen.
+    "MAX_BYTES": "104857600",
+    // Största kropp för summarize och chat (transcript.json), i byte.
+    "AI_MAX_BYTES": "20971520"
+  },
+  "r2_buckets": [
+    // Hinken skapas med `npx wrangler r2 bucket create snicksnack-mottagare`. Byter du namn: byt här också.
+    { "binding": "FILER", "bucket_name": "snicksnack-mottagare" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "snicksnack-mottagare",
+      // BYT: id:t som `npx wrangler d1 create snicksnack-mottagare` skriver ut (Wrangler kan erbjuda sig att
+      // fylla i det själv). Nollorna räcker för `npm run dev` och `npm test`, men inte för att deploya.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -6,7 +6,8 @@ export default defineConfig(async () => {
   return {
     plugins: [
       cloudflareTest({
-        wrangler: { configPath: "./wrangler.jsonc" },
+        // Mallen, så att testerna går direkt efter en klon (utan egen wrangler.jsonc).
+        wrangler: { configPath: "./wrangler.example.jsonc" },
         miniflare: {
           // Låg gräns i testerna så att 413 går att prova utan 100 MB.
           bindings: { TEST_MIGRATIONS: migrations, ADMIN_PASSWORD: "testlösen", MAX_BYTES: "20000", AI_MAX_BYTES: "20000", KEY_SECRET: "testhemlighet" },
