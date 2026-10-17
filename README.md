@@ -13,7 +13,9 @@ per ägare; vill någon annan ha en egen mottagare sätter de upp sin egen.
   (eller `audio.wav`).
 - **Avsändare, mål och ett index över snacken** ligger i en D1-databas. Nycklarna sparas bara som SHA-256.
 - **Admin** finns på `/admin`: inställningar (namn, färg, logga, vad appen ska skicka), mål, avsändare med nyckel och
-  QR-kod, och de mottagna snacken med text och nedladdning.
+  QR-kod, de mottagna snacken med text och nedladdning, och prompter och leverantörer för extern AI.
+- **Extern AI:** avsändarna kan låta mottagaren sammanfatta ett snack eller chatta om det med en AI-modell du väljer
+  (Claude, OpenAI-kompatibla eller en testleverantör utan AI). Se [Extern AI](#extern-ai).
 
 ## Adresserna
 
@@ -22,6 +24,9 @@ per ägare; vill någon annan ha en egen mottagare sätter de upp sin egen.
 | `GET /.well-known/snicksnack` | Upptäckt: namn, version, adresserna, `accepts`, `color`, `icon`. Utan nyckel. |
 | `GET /snicksnack/targets` | Målen som avsändaren har tilldelats. `Authorization: Bearer <nyckel>`. |
 | `POST /snicksnack/receive/<mål>` | Tar emot ett snack (multipart: `transcript`, `text`, `audio`). Svar `{id, url}`. |
+| `GET /snicksnack/summarize` | Prompterna avsändaren får använda. |
+| `POST /snicksnack/summarize/<prompt>` | Sammanfattar ett transcript.json med prompten. Svar `{summary, markdown}`. |
+| `POST /snicksnack/chat` | Chatt om ett snack, strömmad som `text/event-stream`. |
 | `GET /icon.png` | Loggan, om du har laddat upp en. |
 | `/admin` | Admin, inloggning med lösenordet i `ADMIN_PASSWORD`. |
 
@@ -58,7 +63,8 @@ gratisnivån).
    npx wrangler r2 bucket create snicksnack-mottagare
    ```
 
-4. Skapa databasen och lägg in dess id i `wrangler.jsonc` (fältet `database_id`, i stället för nollorna). Wrangler
+4. Skapa databasen och lägg in dess id i `wrangler.jsonc`. Filen i repot pekar på Mattias egen installation: byt
+   också `account_id` och ta bort eller byt `routes`. Lägg in id:t (fältet `database_id`, i stället för nollorna). Wrangler
    kan erbjuda sig att göra det själv.
 
    ```sh
@@ -71,12 +77,16 @@ gratisnivån).
    npm run db:migrate:remote
    ```
 
-6. Deploya och sätt lösenordet för admin:
+6. Deploya och sätt lösenordet för admin och nyckeln som krypterar AI-leverantörernas API-nycklar:
 
    ```sh
    npm run deploy
    npx wrangler secret put ADMIN_PASSWORD
+   openssl rand -base64 48 | npx wrangler secret put KEY_SECRET
    ```
+
+   Spara inte `KEY_SECRET` någon annanstans än i Cloudflare; byts den går de sparade API-nycklarna inte att läsa och
+   får läggas in igen.
 
    Wrangler skriver ut adressen, till exempel `https://snicksnack-mottagare.<ditt-namn>.workers.dev`.
 
@@ -114,8 +124,8 @@ sändning går till snackets sida i admin.
 
 ```sh
 npm install
-cp .dev.vars.example .dev.vars     # sätt ADMIN_PASSWORD
-npm run seed                       # skapar tabellerna, målet "inbox" och en avsändare; skriver ut nyckeln
+cp .dev.vars.example .dev.vars     # sätt ADMIN_PASSWORD och KEY_SECRET
+npm run seed                       # skapar tabellerna, målet "inbox" och en avsändare med alla prompter; skriver ut nyckeln
 npm run dev                        # http://localhost:8787
 ```
 
@@ -131,8 +141,21 @@ curl -H "Authorization: Bearer $NYCKEL" -H "Idempotency-Key: prov-1" \
   http://localhost:8787/snicksnack/receive/inbox
 ```
 
-iOS-simulatorn når `http://localhost:8787` direkt. En telefon på samma nät når datorn med
-`npx wrangler dev --ip 0.0.0.0` och `http://<datorns-ip>:8787`; appen tillåter http bara till lokala nät.
+iOS-simulatorn når `http://localhost:8787` direkt. `npm run dev` kör `wrangler dev --local-upstream=localhost:8787`:
+utan det skulle well-known peka på domänen i `routes`. En telefon på samma nät når datorn med
+`npx wrangler dev --ip 0.0.0.0 --local-upstream=<datorns-ip>:8787` och `http://<datorns-ip>:8787`; appen tillåter http
+bara till lokala nät.
+
+Prova AI-anropen med testleverantören (ingen nyckel behövs):
+
+```sh
+curl -H "Authorization: Bearer $NYCKEL" http://localhost:8787/snicksnack/summarize
+curl -H "Authorization: Bearer $NYCKEL" -H "Content-Type: application/json" --data-binary @transcript.json \
+  http://localhost:8787/snicksnack/summarize/kort-sammanfattning
+curl -N -H "Authorization: Bearer $NYCKEL" -H "Content-Type: application/json" \
+  -d '{"prompt":null,"messages":[{"role":"user","content":"Vad handlade det om?"}],"transcript":{"text":"Hej. Vi börjar."},"live":true}' \
+  http://localhost:8787/snicksnack/chat
+```
 
 Tester: `npm test` (vitest i Workers-miljön, med lokal R2 och D1). Typer: `npm run typecheck`.
 
@@ -148,6 +171,52 @@ Tester: `npm test` (vitest i Workers-miljön, med lokal R2 och D1). Typer: `npm 
   66 MB, så det räcker till runt 150 timmar ljud. Utan ljud är snacken några hundra kB.
 - **D1 och Workers gratis:** 5 GB databas och 100 000 anrop per dygn, mer än nog här.
 - Listan över snack i admin visar de 500 senaste per urval.
+
+## Extern AI
+
+Avsändarna kan låta mottagaren sammanfatta ett snack eller chatta om det, även under en pågående inspelning.
+Transkriptet skickas med i varje anrop och ingenting av det sparas på servern; bara antal anrop och tokens per dag
+räknas (syns under **Leverantörer**). Protokollet står i [docs/protokoll.md](docs/protokoll.md), avsnitt 4–6.
+
+**Leverantörer** är var anropen går:
+
+- `anthropic`: Claude via Messages API. Standardmodell `claude-sonnet-4-6`; modellnamnet är fritt.
+- `openai`: allt som talar OpenAI:s `chat/completions` med strömning. Ange bas-URL, nyckel och modell, till exempel
+  `https://api.openai.com/v1`, `https://api.mistral.ai/v1`, Azure (`https://<resurs>.openai.azure.com/openai/v1`)
+  eller Ollama (`http://<dator>:11434/v1`, utan nyckel).
+- `test`: ingen AI och ingen nyckel. Svarar med en fast text byggd på transkriptet (antal ord och talare, de första
+  meningarna) och strömmar den i små bitar. För prov: `[fel]` i frågan ger ett fel mitt i strömmen, `[fel-före]` ett
+  fel innan, och `[trasig]` i snackets anteckning en sammanfattning i fel form (502).
+
+API-nycklarna sparas krypterade (AES-GCM med en nyckel härledd ur `KEY_SECRET`) och visas bara maskerade.
+
+**Prompter** har ett id, namn och beskrivning (visas i appen), en sort (`summary` för sammanfattningar, `chat` för
+chattens snabbval), om de får användas live, leverantör och modell, en systemtext (tom = mottagarens, under
+Inställningar) och en användartext: för en sammanfattning instruktionen som ger avsnitten, för chatt snabbvalets
+fråga. Kryssa i vilka avsändare som får använda prompten (det går också under **Avsändare**).
+
+En ny installation har testleverantören och två prompter, **Sammanfatta hittills** (chatt, live) och **Kort
+sammanfattning** (sammanfattning), så att allt går att prova utan nycklar. Byt leverantör på dem när du har lagt in
+en riktig.
+
+Några regler i den här mottagaren: en sammanfattningsprompt går bara att använda med summarize och en chattprompt bara
+med chat (annars `400`); en prompt som inte är live ger `400` vid `live: true`; en fri fråga (`prompt: null`) kräver
+att avsändaren har minst en chattprompt och använder leverantören under Inställningar, eller annars den första
+chattpromptens.
+
+### Startprompter
+
+Bra att skapa under **Prompter** (användartexten står efter namnet):
+
+- **Sammanfatta** (summary): "Sammanfatta snacket i ett avsnitt "Sammanfattning" med 4–8 punkter. Ta med vem som sa
+  vad när det spelar roll."
+- **Beslut och åtgärder** (summary): "Lista besluten i ett avsnitt "Beslut" och åtgärderna i ett avsnitt "Att göra",
+  med vem som ansvarar och när om det sägs. Hitta inte på något som inte sägs; finns inga, skriv en punkt om det."
+- **Citat** (summary): "Välj 3–6 ordagranna citat som fångar det viktigaste i snacket, i ett avsnitt "Citat". Ange
+  talare och tid för varje."
+- **Förtydliga det senaste** (chat, live): "Förklara kort vad som sades de senaste minuterna och vad det betyder. Lyft
+  fram oklarheter eller frågor som borde ställas."
+- **Sammanfatta hittills** (chat, live): finns från början.
 
 ## Efter mottagning
 
@@ -171,8 +240,9 @@ Följ avsnittet "Sätta upp på ditt eget Cloudflare-konto" steg för steg:
 - kontrollera att jag är inloggad med `npx wrangler whoami` (be mig köra `npx wrangler login` om inte,
   och fråga vilket konto som ska användas om det finns flera),
 - skapa R2-hinken och D1-databasen, lägg in databasens id i wrangler.jsonc och kör migreringen,
-- deploya, och be mig sedan själv köra `npx wrangler secret put ADMIN_PASSWORD` så att lösenordet inte
-  hamnar i din kontext,
+- byt account_id, routes och database_id i wrangler.jsonc mot mina (filen pekar på en annan installation),
+- deploya, och be mig sedan själv köra `npx wrangler secret put ADMIN_PASSWORD` och
+  `openssl rand -base64 48 | npx wrangler secret put KEY_SECRET` så att hemligheterna inte hamnar i din kontext,
 - kör `npm test` innan du deployar.
 
 Fråga mig om jag vill använda en egen domän; i så fall lägg till den som custom domain i wrangler.jsonc.

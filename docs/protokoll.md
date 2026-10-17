@@ -1,5 +1,7 @@
 > Kopia av `docs/mottagare.md` i Snicksnack-repot (ahlstrominfo/snicksnack, gren 1.2, commit 2dd208e, hämtad 2026-10-17).
 > Originalet gäller om de skiljer sig. Avsnitten om appens sida och motorn gäller appen, inte servern.
+> Fälten `summarize` och `chat` och avsnitten 4–6 (extern AI, beslutat 2026-10-17) är tillagda här efter samma
+> beslut som appen följer; de fanns ännu inte i originalet när kopian gjordes.
 
 # Mottagare: skicka snack till en server
 
@@ -44,6 +46,8 @@ Utan nyckel. Svar `application/json`:
 | `accepts` | valfritt | Vilka delar servern vill ha: `audio`, `transcript`, `text`. Saknas = alla. Appen skickar inte det servern inte vill ha (ljudet är stort). |
 | `key_url` | valfritt | Sida där användaren kan hämta en nyckel. Appen kan visa en länk dit. |
 | `color` | valfritt | Serverns färg som hex, `"#E27B48"` (# och sex siffror). Appen använder den som accent för mottagarens post (listan, väljaren vid Skicka, markeringen på snacket) och tonar den själv för ljust och mörkt läge. |
+| `summarize` | valfritt | Absolut URL till prompterna och sammanfattningen (4, 5). Finns bara när servern har minst en prompt av sorten `summary`. |
+| `chat` | valfritt | Absolut URL till chatten (6). Finns bara när servern har minst en prompt av sorten `chat`. |
 | `icon` | valfritt | Absolut URL till serverns logga: PNG, kvadratisk, minst 256 px, gärna genomskinlig bakgrund, högst 2 MB. Appen hämtar den en gång och sparar den (igen bara om adressen ändras). Samma regel som adressen: https, http bara på lokala nät. Inte SVG: iOS kan inte rita SVG från nätet. |
 
 Saknas `color` och `icon` visar appen sin vanliga bubbla och namnet. En ogiltig färg eller en logga som inte går
@@ -150,6 +154,79 @@ Statuskoder: `401` ogiltig nyckel, `404` målet finns inte längre (appen uppdat
 | `summaries` | Appens sammanfattningar, äldst först. `kind`: `short`, `decisions`, `minutes`, `quotes`. `section` är avsnittets rubrik som appen visar den ("Sammanfattning", "Beslut", "Att göra", "Frågor", "Citat"). `at` är sekund i inspelningen när punkten har en källa. |
 | `parts` | Bara för sammanslagna snack: delarna i den gemensamma tidslinjen. Annars tom. |
 | `quick_note` | En snabbanteckning. |
+
+## 4. Prompter: `GET <summarize>`
+
+Med nyckel. Servern låter appen använda extern AI genom fasta prompter. Prompter tilldelas avsändare precis som mål;
+listan innehåller bara de prompter nyckeln får använda. Svar:
+
+```json
+{
+  "prompts": [
+    { "id": "coachrapport", "name": "Coachrapport", "description": "Vad som gick bra…", "kind": "summary", "live": false }
+  ]
+}
+```
+
+`kind` är `"summary"` (används med 5) eller `"chat"` (ett snabbval i chatten, 6). `live` betyder att prompten får
+användas under pågående inspelning.
+
+Statuskoder: `401` ogiltig nyckel.
+
+## 5. Sammanfatta: `POST <summarize>/<prompt-id>`
+
+Med nyckel. Kroppen är `application/json`: samma transcript.json som i mottagningen (3), med fälten `text`, `words`,
+`speakers`, `note`, `title`, `duration`, `language`, `tags` …
+
+Svar `200`:
+
+```json
+{
+  "summary": {
+    "kind": "custom",
+    "name": "Coachrapport",
+    "prompt": "coachrapport",
+    "created_at": "2026-10-17T09:12:00+02:00",
+    "items": [{ "section": "Rubrik", "text": "…", "speaker": 0, "at": 12.3 }]
+  },
+  "markdown": "…"
+}
+```
+
+`speaker` och `at` är `null` när de saknas. Servern begär ett strukturerat svar av modellen (JSON med avsnitt och
+punkter) och validerar det; följer det inte formen görs anropet om en gång, annars `502` med `{"error": …}`.
+Anropet är synkront och kan ta upp till ett par minuter.
+
+Statuskoder: `401` ogiltig nyckel, `404` okänd prompt eller en prompt avsändaren inte har, `413` för stor kropp,
+`502` modellen svarade fel eller inte i formen.
+
+## 6. Chatta: `POST <chat>`
+
+Med nyckel. Kroppen är `application/json`:
+
+```json
+{
+  "prompt": "sammanfatta-hittills",
+  "messages": [{ "role": "user", "content": "…" }, { "role": "assistant", "content": "…" }],
+  "transcript": { "…": "transcript.json" },
+  "live": true
+}
+```
+
+- `prompt` är ett prompt-id eller `null`. Är det satt lägger servern själv till promptens användartext som sista
+  användarmeddelande (appen visar promptens namn som bubbla). Annars är sista meddelandet i `messages` frågan.
+- Hela transkriptet (texten med talarprefix när talaren byts) och anteckningen (`note`) läggs i systemprompten,
+  tillsammans med promptens eller mottagarens systemtext.
+- Vid `live: true` säger systemprompten att mötet pågår och att texten är det som sagts hittills.
+
+Svar `text/event-stream` med rader `data: {"content": "…"}` under strömningen, valfritt `data: {"status": "…"}`, och
+sist `data: {"done": true}`. Fel innan strömmen börjar: vanlig `4xx`/`5xx` med JSON. Fel mitt i: `data: {"error": "…"}`
+och strömmen stängs.
+
+Chatten är statelös: servern sparar inget av den (men får räkna anrop och tokens).
+
+Statuskoder före strömmen: `401` ogiltig nyckel, `404` okänd prompt eller prompt avsändaren inte har, `413` för
+stor kropp, `5xx` fel hos servern eller modellen.
 
 ## Appens sida
 
