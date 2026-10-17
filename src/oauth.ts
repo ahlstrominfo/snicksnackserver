@@ -29,7 +29,7 @@ const CORS = {
 };
 
 const SIDHUVUDEN = {
-  "Referrer-Policy": "no-referrer",
+  "Referrer-Policy": "same-origin",
   "X-Robots-Tag": "noindex",
   "X-Frame-Options": "DENY",
   "Content-Security-Policy": "frame-ancestors 'none'",
@@ -264,8 +264,12 @@ export async function auktorisera(req: Request, env: Env): Promise<Response> {
   }
   if (req.method !== "POST") return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
 
+  // Safari skickar "Origin: null" på formulär från sidor utan referrer, så "null" släpps igenom;
+  // det riktiga skyddet är csrf-fältet som är bundet till kakan (SameSite=Lax).
   const ursprung = req.headers.get("Origin");
-  if (ursprung && ursprung !== url.origin) return felsida(env, "Nekad", "Formuläret kom från en annan sida.", 403);
+  if (ursprung && ursprung !== "null" && ursprung !== url.origin) {
+    return felsida(env, "Nekad", "Formuläret kom från en annan sida.", 403);
+  }
   const f = await req.formData().catch(() => new FormData());
   const b = await läsBegäran(f, env, url.origin);
   if (b instanceof Response) return b;
