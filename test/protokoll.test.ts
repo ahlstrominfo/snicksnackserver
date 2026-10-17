@@ -29,6 +29,7 @@ describe("well-known", () => {
       // Migreringen 0002 lägger in en chattprompt och en sammanfattningsprompt.
       summarize: `${BAS}/snicksnack/summarize`,
       chat: `${BAS}/snicksnack/chat`,
+      mcp: `${BAS}/mcp`,
     });
   });
 

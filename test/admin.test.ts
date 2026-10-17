@@ -195,3 +195,39 @@ describe("admin för extern AI", () => {
     expect((await post("/admin/prompter", kaka, fel)).status).toBe(400);
   });
 });
+
+describe("admin för agenter", () => {
+  it("skapar och spärrar en ägarnyckel och bygger om sökindexet", async () => {
+    const kaka = await cookie();
+    const r = await post("/admin/agenter", kaka, new URLSearchParams({ name: "Claude Code" }));
+    expect(r.status).toBe(200);
+    const nyckel = /ssk_agent_[A-Za-z0-9_-]{43}/.exec(await r.text())![0];
+    const lista = await anropa("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${nyckel}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(lista.status).toBe(200);
+    const id = (await env.DB.prepare("SELECT id FROM agent_keys WHERE name = 'Claude Code'").first<{ id: string }>())!.id;
+    expect((await post(`/admin/agenter/${id}/sparra`, kaka, new URLSearchParams())).status).toBe(303);
+    const efter = await anropa("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${nyckel}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(efter.status).toBe(401);
+    const om = await post("/admin/agenter/sokindex", kaka, new URLSearchParams());
+    expect(decodeURIComponent(om.headers.get("Location")!)).toContain("Sökindexet är ombyggt");
+  });
+
+  it("avsändarsidan visar den personliga länken och kan byta den", async () => {
+    const kaka = await cookie();
+    await skapaAvsändare("fia", []);
+    const sida = await (await anropa("/admin/avsandare", { headers: { Cookie: kaka } })).text();
+    const länk = (await env.DB.prepare("SELECT page_token FROM senders WHERE id = 'fia'").first<{ page_token: string }>())!.page_token;
+    expect(sida).toContain(`${BAS}/min/${länk}`);
+    expect((await anropa(`/min/${länk}`)).status).toBe(200);
+    await post("/admin/avsandare/fia/ny-sida", kaka, new URLSearchParams());
+    expect((await anropa(`/min/${länk}`)).status).toBe(404);
+  });
+});
