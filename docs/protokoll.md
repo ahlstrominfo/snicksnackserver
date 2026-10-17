@@ -53,6 +53,10 @@ Utan nyckel. Svar `application/json`:
 Saknas `color` och `icon` visar appen sin vanliga bubbla och namnet. En ogiltig färg eller en logga som inte går
 att hämta behandlas som att fältet saknas. Fälten är valfria, så protokollversionen är fortfarande 1.
 
+**Serverns tillägg (inte en del av appens protokoll):** referensmottagaren lägger också till `mcp`, den absoluta adressen
+till dess MCP-server för agenter (Streamable HTTP, med en agentnyckel som `Authorization: Bearer`). Appen bryr sig
+inte om fältet; det står här så att andra klienter vet var de hittar det. Se README, "Koppla en agent (MCP)".
+
 `.well-known` är en katalog (RFC 8615): varje tjänst har sitt eget namn under den, så `snicksnack` ligger
 bredvid t.ex. MCP:s `oauth-protected-resource` utan att krocka.
 

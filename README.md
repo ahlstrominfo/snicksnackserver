@@ -28,6 +28,9 @@ per ägare; vill någon annan ha en egen mottagare sätter de upp sin egen.
 | `POST /snicksnack/summarize/<prompt>` | Sammanfattar ett transcript.json med prompten. Svar `{summary, markdown}`. |
 | `POST /snicksnack/chat` | Chatt om ett snack, strömmad som `text/event-stream`. |
 | `GET /icon.png` | Loggan, om du har laddat upp en. |
+| `POST /mcp` | MCP-servern för agenter (Claude Code, Cursor …), med en agentnyckel. Se [Koppla en agent](#koppla-en-agent-mcp). |
+| `GET /ljud/<token>` | Ljudet via en signerad länk från MCP-verktyget `get_audio_url` (gäller en timme). |
+| `/min/<token>` | En avsändares personliga sida: agentnycklar och hur man kopplar en agent. |
 | `/admin` | Admin, inloggning med lösenordet i `ADMIN_PASSWORD`. |
 
 Statuskoder från protokollet: `401` fel eller spärrad nyckel, `404` okänt mål eller ett mål avsändaren inte har,
@@ -218,14 +221,56 @@ Bra att skapa under **Prompter** (användartexten står efter namnet):
   fram oklarheter eller frågor som borde ställas."
 - **Sammanfatta hittills** (chat, live): finns från början.
 
+## Koppla en agent (MCP)
+
+Mottagaren är också en MCP-server, så att en AI-agent kan läsa och söka i snacken. Adressen är
+`https://<din-adress>/mcp` (Streamable HTTP, statelös) och den står också i well-known som `mcp`. Agenten loggar in
+med en **agentnyckel** (`ssk_agent_…`), inte med OAuth: man går till sajten och hämtar en nyckel som är unik för
+användaren och agenten. Nycklarna sparas bara som SHA-256 och visas en gång.
+
+**Ägaren:** under **Agenter** i admin skapar du en nyckel per agent (till exempel "Claude Code på jobbdatorn"). Den ser
+alla snack. Listan visar när varje nyckel senast användes, och en nyckel kan spärras när som helst. Där finns också
+avsändarnas nycklar och knappen **Bygg om sökindexet** (för snack som kom in innan sökningen fanns).
+
+**En avsändare:** varje avsändare har en personlig sida, `/min/<token>`. Länken visas under **Avsändare** (med en
+kopiera-knapp och **Byt länk**) och på sidan med QR-koden som "Din sida". Länken är inloggningen, så den ska inte delas.
+Där skapar avsändaren nycklar för sina agenter och ser kommandona. En avsändares nyckel ser bara dennes egna snack, och
+spärras avsändaren slutar också dennes agentnycklar att fungera.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http snicksnack https://<din-adress>/mcp --header "Authorization: Bearer <agentnyckel>"
+```
+
+Cursor och andra klienter som läser `mcpServers`:
+
+```json
+{ "mcpServers": { "snicksnack": { "url": "https://<din-adress>/mcp", "headers": { "Authorization": "Bearer <agentnyckel>" } } } }
+```
+
+claude.ai (connectors) går inte att koppla än: den kräver OAuth, som mottagaren inte har.
+
+Verktygen (engelska namn; löptext i svaren är på svenska):
+
+| Verktyg | |
+|---|---|
+| `list_snacks(target?, sender?, from?, to?, tag?, query?, limit=20, offset=0)` | Snacken, nyast först: titel, id, recorded_at, längd, mål, avsändare, taggar, antal ord. `from`/`to` är datum (`YYYY-MM-DD`). |
+| `get_snack(target, sender, id, include?)` | Ett snack: texten med talarprefix vid talarbyte, anteckningen, sammanfattningarna och taggarna. `include` väljer bland `text`, `summaries`, `note`, `words`; orden med tider bara på begäran. |
+| `search(query, limit=20)` | Fulltextsök (FTS5) i titel, text, anteckning och sammanfattningar. Alla ord måste finnas, som prefix. Träffar med utdrag och snackets referens. |
+| `get_audio_url(target, sender, id)` | En signerad länk till ljudet som gäller en timme (HMAC med `KEY_SECRET`), med Range-stöd. |
+| `list_targets()` | Målen, och för ägaren också avsändarna, med antal snack. |
+
+Sökindexet fylls när ett snack tas emot (bara om transkriptet sparas, se `accepts`). Snack som fanns innan läggs in med
+**Bygg om sökindexet** under Agenter; det läser transcript.json ur R2.
+
 ## Efter mottagning
 
 `src/efter-mottagning.ts` anropas efter varje mottaget snack, med metadata (mål, avsändare, titel, tid, längd,
 taggar, filer, länk, om det är nytt eller en omsändning). Den körs efter att svaret skickats till appen och ett fel
 där påverkar inte mottagningen. I dag skriver den bara en loggrad.
 
-Det som är tänkt att komma dit: e-post till ägaren när ett snack kommer in, och en MCP-server så att en AI-assistent
-kan söka i och läsa de mottagna snacken. Inget av det finns ännu.
+Det som är tänkt att komma dit: e-post till ägaren när ett snack kommer in, eller en webhook. Det finns inte ännu.
 
 ## Prompt till Claude Code
 
