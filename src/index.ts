@@ -2,6 +2,8 @@
 // Protokollet: docs/protokoll.md. Admin: /admin.
 
 import { admin } from "./admin";
+import { ljud, mcp } from "./mcp";
+import { minSida } from "./min";
 import { chatta, listaPrompter, sammanfatta } from "./ai/anrop";
 import { fel, ikon, receive, targets, wellKnown } from "./protokoll";
 
@@ -31,6 +33,19 @@ export default {
       }
       if (pathname === "/snicksnack/chat") {
         return metod === "POST" ? await chatta(req, env, ctx) : fel(405, "Bara POST");
+      }
+      if (pathname === "/mcp") return await mcp(req, env, ctx);
+      if (pathname.startsWith("/ljud/")) {
+        return metod === "GET" || metod === "HEAD" ? await ljud(req, env, pathname.slice("/ljud/".length)) : fel(405, "Bara GET");
+      }
+      if (pathname.startsWith("/min/")) {
+        let delar: string[];
+        try {
+          delar = pathname.slice("/min/".length).replace(/\/+$/, "").split("/").map(decodeURIComponent);
+        } catch {
+          return fel(404, "Finns inte");
+        }
+        return await minSida(req, env, delar);
       }
       if (pathname === "/icon.png") {
         return metod === "GET" || metod === "HEAD" ? await ikon(req, env) : fel(405, "Bara GET");

@@ -10,6 +10,7 @@ import {
 } from "./db";
 import { promptsorter } from "./ai/anrop";
 import { efterMottagning } from "./efter-mottagning";
+import { indexera } from "./sok";
 
 export const IKON_NYCKEL = "_config/icon.png";
 
@@ -35,6 +36,8 @@ export async function wellKnown(req: Request, env: Env): Promise<Response> {
   };
   if (sorter.has("summary")) svar.summarize = `${origin}/snicksnack/summarize`;
   if (sorter.has("chat")) svar.chat = `${origin}/snicksnack/chat`;
+  // Serverns tillägg (inte en del av appens protokoll): MCP för agenter.
+  svar.mcp = `${origin}/mcp`;
   if (s.color) svar.color = s.color;
   // Versionen i adressen gör att appen hämtar loggan igen när den byts (appen hämtar bara när adressen ändras).
   if (s.icon) svar.icon = `${origin}/icon.png?v=${ikonversion(s.icon)}`;
@@ -196,6 +199,11 @@ export async function receive(req: Request, env: Env, ctx: ExecutionContext, rå
       tid,
     )
     .run();
+
+  // Sökindexet för agenterna (MCP), bara när transkriptet sparas.
+  if (transkriptText !== null && accepts.includes("transcript")) {
+    await indexera(env.DB, { target: mål.id, sender: avsändare.id, id: snackId }, JSON.parse(transkriptText));
+  }
 
   const origin = new URL(req.url).origin;
   const id = `${mål.id}/${avsändare.id}/${snackId}`;

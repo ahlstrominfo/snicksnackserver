@@ -106,3 +106,33 @@ export async function dekryptera(hemlighet: string, värde: string): Promise<str
 export function maskera(nyckel: string): string {
   return nyckel.length <= 12 ? "…" + nyckel.slice(-2) : `${nyckel.slice(0, 7)}…${nyckel.slice(-4)}`;
 }
+
+// ---------- Signerade länkar (ljudet för agenter) ----------
+
+async function länknyckel(hemlighet: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", kodare.encode("snicksnack-mottagare/ljudlankar/" + hemlighet), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
+}
+
+/** "<base64url(text)>.<base64url(hmac)>" */
+export async function signera(hemlighet: string, text: string): Promise<string> {
+  const sig = await crypto.subtle.sign("HMAC", await länknyckel(hemlighet), kodare.encode(text));
+  return `${base64url(kodare.encode(text))}.${base64url(new Uint8Array(sig))}`;
+}
+
+/** Texten om signaturen stämmer, annars null. */
+export async function verifiera(hemlighet: string, token: string): Promise<string | null> {
+  const [t, s] = token.split(".");
+  const tb = t ? frånBase64url(t) : null;
+  const sb = s ? frånBase64url(s) : null;
+  if (!tb || !sb) return null;
+  const ok = await crypto.subtle.verify("HMAC", await länknyckel(hemlighet), sb, tb);
+  return ok ? new TextDecoder().decode(tb) : null;
+}
+
+/** En lång slumpad token för länkar (personliga sidan). */
+export function slumptoken(byte = 24): string {
+  return base64url(crypto.getRandomValues(new Uint8Array(byte)));
+}

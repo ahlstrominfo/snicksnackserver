@@ -125,6 +125,7 @@ a.radlank:hover, .post > summary:hover { background: color-mix(in srgb, var(--bl
 .chev { color: var(--utkast); font-size: 1.3rem; line-height: 1; transition: transform .2s; flex: none; }
 .post[open] > summary .chev { transform: rotate(90deg); }
 .post > .postinnehall { padding: 4px 18px 18px; }
+.nyckelrad { display: flex; align-items: center; gap: 12px; padding: 12px 10px 12px 18px; }
 .ny { margin-top: 8px; }
 .ny > summary { color: var(--accent); font-weight: 650; }
 .ny > summary .plus { font-size: 1.3rem; line-height: 1; }

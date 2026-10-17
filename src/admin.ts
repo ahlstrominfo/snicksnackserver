@@ -20,6 +20,9 @@ import { html, htmlSvar, raw, type Raw } from "./html";
 import { giltigSession, läsCookie, nyNyckel, rättLösenord, sha256Hex, skapaSession, SESSION_DAGAR } from "./krypto";
 import { IKON_NYCKEL, ikonversion } from "./protokoll";
 import { adminAi, allaPrompter, promptVal, sättPrompterFörAvsändare } from "./admin-ai";
+import { tabortUrIndex } from "./sok";
+import { adminAgenter } from "./admin-agenter";
+import { bytSidtoken, sidtoken } from "./agenter";
 import { FAVICON, fältrad, logga, rubrik, SKRIPT, STIL, tomt, valgrupp, växel } from "./utseende";
 
 const COOKIE = "snicksnack_admin";
@@ -102,11 +105,20 @@ export async function admin(req: Request, env: Env): Promise<Response> {
           if (delar[2] === "sparra") return await spärra(env, delar[1]);
           if (delar[2] === "ny-nyckel") return await bytNyckel(env, s, delar[1], url);
           if (delar[2] === "ta-bort") return await taBortAvsändare(env, delar[1]);
+          if (delar[2] === "ny-sida") {
+            if (!(await bytSidtoken(env.DB, delar[1]))) throw new EjFunnen();
+            return medMeddelande("/admin/avsandare", "Länken till den personliga sidan är bytt. Den gamla fungerar inte längre.");
+          }
         }
         break;
       case "prompter":
       case "leverantorer": {
         const svar = await adminAi(req, env, s, delar, url);
+        if (svar) return svar;
+        break;
+      }
+      case "agenter": {
+        const svar = await adminAgenter(req, env, s, delar, url);
         if (svar) return svar;
         break;
       }
@@ -230,7 +242,7 @@ export function sida(s: Inställningar | null, titel: string, innehåll: Raw, ak
                 ${länk("/admin/snack", "Snack")}${länk("/admin/mal", "Mål")}${länk("/admin/avsandare", "Avsändare")}${länk(
                   "/admin/prompter",
                   "Prompter",
-                )}${länk("/admin/leverantorer", "Leverantörer")}${länk("/admin/installningar", "Inställningar")}
+                )}${länk("/admin/leverantorer", "Leverantörer")}${länk("/admin/agenter", "Agenter")}${länk("/admin/installningar", "Inställningar")}
               </nav>`
             : ""}
         </div>
@@ -574,6 +586,7 @@ async function taBortSnack(env: Env, t: string, a: string, id: string): Promise<
   const lista = await env.FILER.list({ prefix });
   if (lista.objects.length) await env.FILER.delete(lista.objects.map((o) => o.key));
   await env.DB.prepare("DELETE FROM snacks WHERE target_id = ? AND sender_id = ? AND snack_id = ?").bind(t, a, id).run();
+  await tabortUrIndex(env.DB, { target: t, sender: a, id });
   return medMeddelande("/admin/snack", "Snacket är borttaget.");
 }
 
@@ -718,6 +731,9 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
     env.DB.prepare("SELECT sender_id, prompt_id FROM sender_prompts").all<{ sender_id: string; prompt_id: string }>(),
   ]);
   const prompterFör = (id: string) => tilldelade.results.filter((r) => r.sender_id === id).map((r) => r.prompt_id);
+  // Länken till varje avsändares personliga sida (agentnycklar för MCP); skapas här om den saknas.
+  const sidor = new Map(await Promise.all(avsändare.map(async (a) => [a.id, await sidtoken(env.DB, a.id)] as const)));
+  const sidlänk = (id: string) => `${url.origin}/min/${encodeURIComponent(sidor.get(id) ?? "")}`;
   return htmlSvar(
     sida(
       s,
@@ -743,6 +759,17 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
                           onsubmit="return confirm('Spärra avsändaren? Nyckeln slutar fungera direkt.')"></form>`
                       : html`<form id="stang-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ta-bort"
                           onsubmit="return confirm('Ta bort avsändaren? Mottagna snack ligger kvar.')"></form>`}
+                    <form id="sida-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ny-sida"
+                      onsubmit="return confirm('Byta länk? Den gamla slutar fungera.')"></form>
+                    <div class="kort" style="background:var(--falt)">
+                      <span class="etikett">Personlig sida</span>
+                      <p class="tips" style="margin:0 0 8px">Där skapar ${a.name} nycklar för sina AI-agenter. Länken är inloggningen.</p>
+                      <code>${sidlänk(a.id)}</code>
+                      <div class="knappar" style="margin-top:8px">
+                        <button type="button" class="diskret liten" data-kopiera="${sidlänk(a.id)}">Kopiera länken</button>
+                        <button class="diskret liten" form="sida-${i}">Byt länk</button>
+                      </div>
+                    </div>
                     <form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}">
                       ${fältrad("Namn", html`<input type="text" name="name" value="${a.name}" required />`)}
                       ${valgrupp("Mål", målVal(mål, a.targets))}
@@ -808,7 +835,7 @@ async function skapaAvsändare(req: Request, env: Env, s: Inställningar, url: U
     .run();
   await sättMål(env, id, flera(f, "targets"));
   await sättPrompterFörAvsändare(env.DB, id, flera(f, "prompts"));
-  return nyckelSida(s, namn, nyckel, url);
+  return nyckelSida(s, namn, nyckel, url, await sidtoken(env.DB, id));
 }
 
 async function ändraAvsändare(req: Request, env: Env, id: string): Promise<Response> {
@@ -838,7 +865,7 @@ async function bytNyckel(env: Env, s: Inställningar, id: string, url: URL): Pro
     .bind(await sha256Hex(nyckel), nyckel.slice(-4), id)
     .first<{ name: string }>();
   if (!rad) throw new EjFunnen();
-  return nyckelSida(s, rad.name, nyckel, url);
+  return nyckelSida(s, rad.name, nyckel, url, await sidtoken(env.DB, id));
 }
 
 async function taBortAvsändare(env: Env, id: string): Promise<Response> {
@@ -854,7 +881,8 @@ export function kopplingslänk(origin: string, nyckel: string): string {
   return `snicksnack://receiver?url=${origin}&key=${nyckel}`;
 }
 
-function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL): Response {
+function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL, sidtoken: string | null): Response {
+  const din = sidtoken ? `${url.origin}/min/${encodeURIComponent(sidtoken)}` : null;
   const länk = kopplingslänk(url.origin, nyckel);
   const qr = qrcode(0, "M");
   qr.addData(länk);
@@ -876,6 +904,14 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL): 
           </dl>
           <div class="knappar"><button type="button" class="diskret" data-kopiera="${länk}">Kopiera länken</button></div>
         </details>
+        ${din
+          ? html`<div class="kort">
+              <span class="etikett">Din sida</span>
+              <p class="tips" style="margin:0 0 8px">Ge också ${namn} den här länken: där skapas nycklar för AI-agenter. Länken är inloggningen.</p>
+              <code>${din}</code>
+              <div class="knappar" style="margin-top:8px"><button type="button" class="diskret liten" data-kopiera="${din}">Kopiera länken</button></div>
+            </div>`
+          : ""}
         <div class="knappar"><a class="knapp" href="/admin/avsandare">Klar</a></div>
       </div>`,
       "/admin/avsandare",
