@@ -54,8 +54,12 @@ Saknas `color` och `icon` visar appen sin vanliga bubbla och namnet. En ogiltig 
 att hämta behandlas som att fältet saknas. Fälten är valfria, så protokollversionen är fortfarande 1.
 
 **Serverns tillägg (inte en del av appens protokoll):** referensmottagaren lägger också till `mcp`, den absoluta adressen
-till dess MCP-server för agenter (Streamable HTTP, med en agentnyckel som `Authorization: Bearer`). Appen bryr sig
-inte om fältet; det står här så att andra klienter vet var de hittar det. Se README, "Koppla en agent (MCP)".
+till dess MCP-server för agenter (Streamable HTTP), och `mcp_auth`, hur en agent loggar in där: `["api-key", "oauth"]`.
+`api-key` är en agentnyckel som `Authorization: Bearer ssk_agent_…`; `oauth` är OAuth 2.1 enligt MCP:s specifikation
+(resursmetadata på `/.well-known/oauth-protected-resource`, servermetadata på `/.well-known/oauth-authorization-server`,
+dynamisk registrering och PKCE), som claude.ai:s kopplare använder. `mcp` är fortfarande en sträng, så den som läste
+fältet förut läser det likadant. Appen bryr sig inte om fälten; de står här så att andra klienter vet var de hittar
+dem. Se README, "Koppla en agent (MCP)".
 
 `.well-known` är en katalog (RFC 8615): varje tjänst har sitt eget namn under den, så `snicksnack` ligger
 bredvid t.ex. MCP:s `oauth-protected-resource` utan att krocka.

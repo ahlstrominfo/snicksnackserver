@@ -28,7 +28,9 @@ per ägare; vill någon annan ha en egen mottagare sätter de upp sin egen.
 | `POST /snicksnack/summarize/<prompt>` | Sammanfattar ett transcript.json med prompten. Svar `{summary, markdown}`. |
 | `POST /snicksnack/chat` | Chatt om ett snack, strömmad som `text/event-stream`. |
 | `GET /icon.png` | Loggan, om du har laddat upp en. |
-| `POST /mcp` | MCP-servern för agenter (Claude Code, Cursor …), med en agentnyckel. Se [Koppla en agent](#koppla-en-agent-mcp). |
+| `POST /mcp` | MCP-servern för agenter (Claude Code, Cursor, claude.ai …), med en agentnyckel eller OAuth. Se [Koppla en agent](#koppla-en-agent-mcp). |
+| `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server` | OAuth-metadata för MCP-klienter (RFC 9728, RFC 8414). |
+| `POST /register`, `/authorize`, `POST /token`, `POST /revoke` | OAuth 2.1: registrering av klienter, inloggningen (PKCE S256), tokens och återkallande. |
 | `GET /ljud/<token>` | Ljudet via en signerad länk från MCP-verktyget `get_audio_url` (gäller en timme). |
 | `/min/<token>` | En avsändares personliga sida: agentnycklar och hur man kopplar en agent. |
 | `/admin` | Admin, inloggning med lösenordet i `ADMIN_PASSWORD`. |
@@ -224,9 +226,13 @@ Bra att skapa under **Prompter** (användartexten står efter namnet):
 ## Koppla en agent (MCP)
 
 Mottagaren är också en MCP-server, så att en AI-agent kan läsa och söka i snacken. Adressen är
-`https://<din-adress>/mcp` (Streamable HTTP, statelös) och den står också i well-known som `mcp`. Agenten loggar in
-med en **agentnyckel** (`ssk_agent_…`), inte med OAuth: man går till sajten och hämtar en nyckel som är unik för
-användaren och agenten. Nycklarna sparas bara som SHA-256 och visas en gång.
+`https://<din-adress>/mcp` (Streamable HTTP, statelös) och den står också i well-known som `mcp`. Det finns två sätt
+att logga in:
+
+- **Agentnyckel** (`ssk_agent_…`) för Claude Code, Cursor och andra klienter där man kan sätta ett huvud: man går till
+  sajten och hämtar en nyckel som är unik för användaren och agenten. Nycklarna sparas bara som SHA-256 och visas en gång.
+- **OAuth** för claude.ai och andra klienter som bara tar en adress: klienten registrerar sig själv och öppnar en
+  inloggningssida på mottagaren. Se [claude.ai](#claudeai) nedan.
 
 **Ägaren:** under **Agenter** i admin skapar du en nyckel per agent (till exempel "Claude Code på jobbdatorn"). Den ser
 alla snack. Listan visar när varje nyckel senast användes, och en nyckel kan spärras när som helst. Där finns också
@@ -249,7 +255,30 @@ Cursor och andra klienter som läser `mcpServers`:
 { "mcpServers": { "snicksnack": { "url": "https://<din-adress>/mcp", "headers": { "Authorization": "Bearer <agentnyckel>" } } } }
 ```
 
-claude.ai (connectors) går inte att koppla än: den kräver OAuth, som mottagaren inte har.
+### claude.ai
+
+I Claude (webben eller appen): **Inställningar → Kopplare → Lägg till egen kopplare**. Namn: Snicksnack, URL:
+`https://snicksnackserver.applicerad.ai/mcp` (eller din egen adress med `/mcp`). Lämna client id och client secret
+tomma. Claude öppnar mottagarens inloggningssida, som visar klientens namn och vad den får se. Logga in på ett av två sätt:
+
+- **Som ägare** med adminlösenordet (eller bara **Godkänn** om du redan är inloggad i admin i samma webbläsare). Kopplingen
+  ser alla snack, som ägarens agentnycklar.
+- **Som avsändare** genom att klistra in länken till Din sida (`/min/<token>`) eller en av dina agentnycklar. Kopplingen
+  ser bara dina egna snack.
+
+**Avslå** skickar tillbaka till Claude utan att koppla. Inloggningarna syns under **Inloggade klienter**: ägaren ser alla
+under Agenter i admin, en avsändare sina egna på sin sida. Båda kan återkalla; klienten slutar då fungera direkt.
+
+Hur det fungerar: `/mcp` svarar `401` med `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`.
+Klienten hittar där servermetadatan (`/.well-known/oauth-authorization-server`), registrerar sig på `/register` (RFC 7591,
+publik klient utan hemlighet), skickar användaren till `/authorize` med PKCE (bara `S256`) och byter koden mot tokens
+på `/token`. Redirect-adresser får vara https, http till `localhost`/`127.0.0.1`, eller ett appschema (`cursor://…`).
+`resource` (RFC 8707) godtas om den pekar på servern men krävs inte. Access-token (`ssk_oauth_…`) gäller en timme,
+refresh-token (`ssk_refresh_…`) 90 dagar och byts vid varje förnyelse. Allt ligger i D1 (`oauth_clients`, `oauth_codes`,
+`oauth_grants`, migration 0004) och tokens och koder sparas bara som SHA-256. Spärras en avsändare slutar också dennes
+inloggningar att fungera. Formuläret skyddas med en cookie och en token signerad med `KEY_SECRET` (eller
+`ADMIN_PASSWORD` om den saknas). Agentnycklar fungerar som förut: ett huvud som börjar med `Bearer ssk_agent_` prövas
+som agentnyckel, allt annat som OAuth-token.
 
 Verktygen (engelska namn; löptext i svaren är på svenska):
 
