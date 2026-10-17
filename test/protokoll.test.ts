@@ -30,6 +30,7 @@ describe("well-known", () => {
       summarize: `${BAS}/snicksnack/summarize`,
       chat: `${BAS}/snicksnack/chat`,
       mcp: `${BAS}/mcp`,
+      mcp_auth: ["api-key", "oauth"],
     });
   });
 
