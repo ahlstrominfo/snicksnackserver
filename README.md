@@ -180,7 +180,7 @@ räknas (syns under **Leverantörer**). Protokollet står i [docs/protokoll.md](
 
 **Leverantörer** är var anropen går:
 
-- `anthropic`: Claude via Messages API. Standardmodell `claude-sonnet-4-6`; modellnamnet är fritt.
+- `anthropic`: Claude via Messages API. Standardmodell `claude-sonnet-5-5`; modellnamnet är fritt.
 - `openai`: allt som talar OpenAI:s `chat/completions` med strömning. Ange bas-URL, nyckel och modell, till exempel
   `https://api.openai.com/v1`, `https://api.mistral.ai/v1`, Azure (`https://<resurs>.openai.azure.com/openai/v1`)
   eller Ollama (`http://<dator>:11434/v1`, utan nyckel).

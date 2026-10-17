@@ -7,11 +7,11 @@ import { läsJson, SAMMANFATTNINGSSCHEMA, transkriptText, type Transkript } from
 export const TYPER = ["anthropic", "openai", "test"] as const;
 export type Typ = (typeof TYPER)[number];
 
-export const STANDARDMODELL: Record<Typ, string> = { anthropic: "claude-sonnet-4-6", openai: "gpt-4.1-mini", test: "test" };
+export const STANDARDMODELL: Record<Typ, string> = { anthropic: "claude-sonnet-5-5", openai: "gpt-4.1-mini", test: "test" };
 
 /** Förslag i admin; modellnamnet är fritt. */
 export const MODELLFÖRSLAG: Record<Typ, string[]> = {
-  anthropic: ["claude-sonnet-4-6", "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
+  anthropic: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-sonnet-4-6"],
   openai: ["gpt-4.1-mini", "gpt-4.1", "mistral-large-latest", "llama3.1"],
   test: ["test"],
 };

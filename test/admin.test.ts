@@ -149,7 +149,7 @@ describe("admin-flödet", () => {
 describe("admin för extern AI", () => {
   it("leverantör: nyckeln sparas krypterad och visas maskerad", async () => {
     const kaka = await cookie();
-    const f = new URLSearchParams({ name: "Claude", type: "anthropic", model: "claude-sonnet-4-6", api_key: "sk-ant-hemlig-nyckel-1234" });
+    const f = new URLSearchParams({ name: "Claude", type: "anthropic", model: "claude-sonnet-5-5", api_key: "sk-ant-hemlig-nyckel-1234" });
     expect((await post("/admin/leverantorer", kaka, f)).status).toBe(303);
     const rad = await env.DB.prepare("SELECT * FROM providers WHERE id = 'claude'").first<any>();
     expect(rad.api_key).toMatch(/^v1\./);
