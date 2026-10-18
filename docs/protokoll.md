@@ -385,8 +385,15 @@ specialtecken). Utan `key` frågar appen efter nyckeln. Användaren kan också s
 | `401`, `403` | Ogiltig nyckel. Mottagaren markeras och inget skickas dit förrän användaren byter nyckel. |
 | `404` | Målet finns inte längre. Sändningen ges upp och målen hämtas igen. |
 | `413` | För stort. Sändningen ges upp och användaren får veta det. |
+| `415` | Ljudet är inte i ett format servern tar emot. Ges upp som övriga `4xx`. |
+| `429` | En gräns som inte går över av sig själv inom kort (till exempel en full lagringskvot). Ges upp som övriga `4xx`; användaren ser kroppen. |
 | övriga `4xx` | Sändningen ges upp; användaren ser status och de första 300 tecknen av kroppen. |
 | `5xx`, nätfel | Försöker igen senare (1, 2, 4 … 60 min). |
+
+**Tillfälliga gränser på mottagningen.** Appen ger upp en sändning vid alla `4xx`, också `429`. En server som
+begränsar takten (för många sändningar på kort tid, tillfällig överbelastning) bör därför svara **`503` med
+`Retry-After`** på `receive`, så att sändningen ligger kvar i kön och görs om. Använd `429` (eller `413`) bara när
+användaren eller ägaren måste göra något, och skriv då en förklaring i `error`.
 
 Upptäckten som inte svarar `200` med giltig JSON ger "ingen mottagare på adressen".
 
@@ -397,6 +404,7 @@ Upptäckten som inte svarar `200` med giltig JSON ger "ingen mottagare på adres
 | `401`, `403` | Ogiltig nyckel, som ovan. |
 | `404` | Prompten finns inte (längre). Appen hämtar prompterna igen. |
 | `413` | Snacket är för långt för mottagaren. |
+| `429` | En rate limit eller kvot är nådd. Appen visar "Servern svarade 429: <error>", så skriv en förklaring som går att förstå (till exempel "Dagens AI-anrop är slut. Försök igen i morgon."). Gärna `Retry-After`. |
 | `502`, `504` | Mottagarens AI gav inget giltigt svar; `error` visas om det finns. |
 | övriga | "Servern svarade <kod>: <error>". |
 
@@ -458,8 +466,17 @@ Det här gäller Workern i det här repot, inte protokollet. En annan server kan
   multipart, när `transcript` inte är ett JSON-objekt, eller när både `Idempotency-Key` och `transcript.id` saknas.
   Svar `201` för ett nytt snack och `200` för en omsändning. `413` över `MAX_BYTES` (100 MB som standard). Delar som
   inte finns i serverns `accepts` sparas inte även om de skickas. Snackets id rensas till `[A-Za-z0-9._-]`.
+  `transcript` ska ha `words` som lista (med `text` i varje ord) och rimliga typer på `id`, `title`, `duration`,
+  `tags` med flera, annars `400` med fältet i `error`. Ljudet ska börja som wav (`RIFF`…`WAVE`) eller m4a (`ftyp` i
+  byte 4–8), annars `415`; formatet avgör filnamnet, inte `Content-Type`. Full lagringskvot ger `429` med en
+  förklaring. Över 30 sändningar per minut och avsändare ger `503` med `Retry-After` (appen försöker igen).
+- **Ogiltiga nycklar:** `401`, men efter 20 ogiltiga nycklar per minut från samma IP `429` med `Retry-After` (också
+  på `targets`, `summarize`, `chat` och `/mcp`).
 - **Sammanfattning och chatt:** `400` om en sammanfattningsprompt används i chatten eller tvärtom, om en prompt utan
   `live` används med `live: true`, eller om sista meddelandet inte är användarens. En fri fråga (`prompt: null`) kräver
   att nyckeln har minst en chattprompt (annars `404`). Modellens svar valideras; följer det inte formen görs anropet om
   en gång, annars `502`. Fel hos AI-leverantören blir `502` (eller `500` när nyckeln saknas eller inte går att läsa).
   `413` över `AI_MAX_BYTES` (20 MB). Chatten skickar `content`, `done` och `error`, men ingen `status`.
+  `429` med en svensk förklaring i `error` vid mer än 10 anrop per minut och avsändare (med `Retry-After`), när
+  avsändarens kvot (AI-anrop per dygn eller tokens per 30 dagar) är slut, eller när mottagarens AI-budget är slut.
+- **MCP:** `429` (JSON-RPC-fel med `Retry-After`) över 60 anrop per minut och nyckel eller inloggning.

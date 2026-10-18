@@ -29,17 +29,22 @@ håller inget tillstånd i minnet mellan anrop. HTML för admin och inloggningss
 | `ai/leverantorer.ts` | Anropen till leverantörerna: `anthropic` (officiella SDK:n), `openai` (fetch mot `chat/completions`), `test` (fast text utan AI). Dekrypterar API-nyckeln per anrop. |
 | `ai/transkript.ts` | Transkriptet som text till modellen, systemprompten, sammanfattningens JSON-schema och valideringen av svaret. |
 | `mcp.ts` | MCP-servern (Streamable HTTP, statelös, en ny `McpServer` per anrop) med verktygen, och den signerade ljudlänken `/ljud/<token>`. |
-| `agenter.ts` | Agentnycklar och omfånget (ägaren ser allt, en avsändare bara sina snack). Avsändarens sidtoken. |
+| `agenter.ts` | Agentnycklar och omfånget (ägaren ser allt, en avsändare bara sina snack). Länken till avsändarens personliga sida (hashad). |
 | `oauth.ts` | OAuth 2.1 för MCP-klienter: metadata, registrering, inloggningssidan med PKCE, tokens och återkallande. |
 | `sok.ts` | Fulltextindexet (FTS5) och ombyggnaden från R2. |
-| `admin.ts` | Admin: inloggning, snack, mål, avsändare, inställningar. |
+| `admin.ts` | Admin: inloggning, snack, mål, avsändare med kvoter, inställningar med standardkvoter och AI-budget, loggen. |
 | `admin-ai.ts` | Admin för leverantörer och prompter. |
 | `admin-agenter.ts` | Admin för agentnycklar, inloggade OAuth-klienter och sökindexet. |
 | `min.ts` | Avsändarens personliga sida `/min/<token>`. |
 | `db.ts` | Inställningar, mål och avsändare i D1. |
 | `krypto.ts` | Hashning, nycklar, admin-sessionen, AES-GCM för leverantörsnycklar och signerade länkar. |
+| `ratelimit.ts` | Rate limits: Cloudflares bindningar (`ratelimits` i wrangler), annars en räknare i minnet per isolat. Gränserna och vad de räknas per. |
+| `sparr.ts` | Spärren efter misslyckade adminlösenord, räknad i D1 per IP och för alla. |
+| `kvoter.ts` | Kvoter per avsändare och den globala AI-budgeten: förbrukning ur `usage` och `snacks.bytes`, och texterna när ett tak nås. |
+| `revision.ts` | Revisionsloggen: händelserna, skrivningen och rensningen efter 90 dagar. |
+| `stadning.ts` | Den nattliga städningen (`scheduled`, cron i wrangler). |
 | `efter-mottagning.ts` | Krok som körs efter varje mottaget snack (i dag bara en loggrad). Platsen för e-post eller webhook. |
-| `html.ts`, `utseende.ts` | En liten HTML-mall som escapar allt som inte uttryckligen är rå HTML, och adminwebbens stil och logga (allt inline). |
+| `html.ts`, `utseende.ts` | En liten HTML-mall som escapar allt som inte uttryckligen är rå HTML, säkerhetshuvudena (CSP med nonce per svar), och adminwebbens stil, logga och skript (allt inline; bekräftelser med `data-bekrafta`, inga inline-händelser). |
 
 ## D1-tabellerna
 
@@ -47,9 +52,9 @@ Migrationerna ligger i `migrations/` och körs med `npm run db:migrate:remote` (
 
 | Tabell | Migration | |
 |---|---|---|
-| `settings` | 0001 | Nyckel/värde: `name`, `color`, `accepts` (JSON), `icon` (när loggan laddades upp), `chat_provider`, `chat_model`, `chat_system`. |
+| `settings` | 0001 | Nyckel/värde: `name`, `color`, `accepts` (JSON), `icon` (när loggan laddades upp), `chat_provider`, `chat_model`, `chat_system`, standardkvoterna `quota_ai_requests_day`, `quota_ai_tokens_30d`, `quota_storage_mb` och den globala `ai_budget_tokens_30d`. |
 | `targets` | 0001 | Målen. `id` är fast (det ingår i R2-sökvägarna). |
-| `senders` | 0001, 0003 | Avsändarna. `key_hash` är SHA-256 av nyckeln (NULL = spärrad), `key_hint` de fyra sista tecknen, `page_token` länken till den personliga sidan. |
+| `senders` | 0001, 0003, 0005 | Avsändarna. `key_hash` är SHA-256 av nyckeln (NULL = spärrad), `key_hint` de fyra sista tecknen, `page_hash` SHA-256 av länken till den personliga sidan (`page_token` är den gamla klartexten, NULL efter migreringen), kvoterna `quota_ai_requests_day`, `quota_ai_tokens_30d`, `quota_storage_mb` (NULL = standarden). |
 | `sender_targets` | 0001 | Vilka mål en avsändare får skicka till. |
 | `snacks` | 0001, 0003 | Index över mottagna snack: mål, avsändare, snack-id, titel, tid, längd, språk, taggar, filer, storlek, antal sändningar och ord. |
 | `providers` | 0002 | AI-leverantörer. `api_key` är krypterad. Migrationen lägger in testleverantören. |
@@ -60,6 +65,8 @@ Migrationerna ligger i `migrations/` och körs med `npm run db:migrate:remote` (
 | `oauth_clients` | 0004 | Dynamiskt registrerade klienter och deras redirect-adresser. |
 | `oauth_codes` | 0004 | Engångskoder (SHA-256), PKCE-utmaningen, giltiga i 10 minuter. |
 | `oauth_grants` | 0004 | En rad per godkänd klient: access- och refresh-token (SHA-256), utgångstider, återkallande. |
+| `audit` | 0005 | Revisionsloggen: tid, händelse, vem (`ägaren`, `avsändare:<id>`, `agent:<id>`, `oauth:<id>`, `okänd`), IP, kort user agent och en rad text. 90 dagar. |
+| `login_failures`, `login_locks` | 0005 | Misslyckade adminlösenord (ett dygn) och spärrarna (`ip:<adress>` eller `alla`) med sluttid. |
 
 ## R2-layouten
 
@@ -80,7 +87,7 @@ Samma snack från två avsändare, eller till två mål, blir två olika mappar.
 | Avsändarnyckel (`ssk_…`) | 32 slumpade byte. Sparas som SHA-256 (hex), visas en gång. | `senders.key_hash` |
 | Agentnyckel (`ssk_agent_…`) | Som ovan. | `agent_keys.key_hash` |
 | OAuth-kod, access-token (`ssk_oauth_…`), refresh-token (`ssk_refresh_…`) | Slumpade; bara SHA-256 sparas. Access gäller 1 h, refresh 90 dagar och byts vid varje förnyelse (den förra gäller 2 min till). | `oauth_codes`, `oauth_grants` |
-| Personlig sida (`/min/<token>`) | 24 slumpade byte, sparas i klartext så att ägaren kan visa länken igen. Kan bytas. | `senders.page_token` |
+| Personlig sida (`/min/<token>`) | 24 slumpade byte. Sparas som SHA-256 och visas en gång (när avsändaren skapas och vid **Byt länk**). Länkar från före migration 0005 hashas när de används, när ägaren öppnar Avsändare och av städningen. | `senders.page_hash` |
 | Leverantörernas API-nycklar | AES-GCM 256 med slumpad IV. Nyckeln härleds med HKDF-SHA-256 ur `KEY_SECRET`. Format `v1.<iv>.<chiffer>`. Visas bara maskerade. | `providers.api_key` |
 | Admin-sessionen | Cookie `<utgång>.<HMAC-SHA-256>`, nyckel härledd ur `ADMIN_PASSWORD`, giltig 30 dagar. `HttpOnly`, `SameSite=Lax`, `Secure` på https. | Bara i webbläsaren |
 | Ljudlänk för agenter | `/ljud/<base64url(utgång + R2-nyckel)>.<HMAC>`, nyckel ur `KEY_SECRET`, giltig 1 h. | Bara i länken |
@@ -107,9 +114,31 @@ Redirect-adresser måste vara https, http till `localhost`/`127.0.0.1`/`[::1]`, 
 (`cursor://…`). En spärrad avsändare förlorar alla sina inloggningar och agentnycklar direkt, eftersom varje anrop
 kontrollerar att avsändaren fortfarande har en nyckel.
 
+## Rate limits, spärr och kvoter
+
+```
+anrop ─▶ rate limit (ratelimit.ts, per Cloudflare-plats, ungefärlig)
+          inloggning 5/min/IP · register 10 · token 30 · ogiltig nyckel/token/länk 20/min/IP
+          mottagning 30/min/avsändare (503) · AI 10/min/avsändare · MCP 60/min/nyckel
+      ─▶ spärr i D1 (sparr.ts, bara lösenordet): 20 fel/IP eller 100 fel totalt på en timme → 429 i en timme
+      ─▶ kvoter i D1 (kvoter.ts): AI-anrop/dygn, tokens/30 d, lagring, global AI-budget → 429 med text
+```
+
+Rate limits och spärrens gränser är tekniska tak i `wrangler.jsonc`; kvoterna och budgeten ställer ägaren in i admin.
+Utan bindningarna (lokalt, eller en gammal `wrangler.jsonc`) räknar `ratelimit.ts` i minnet per isolat med samma
+värden. Ett fel i bindningen släpper igenom anropet.
+
+## Den nattliga städningen
+
+`scheduled` (cron `17 3 * * *`) kör `stadning.ts`: tar bort OAuth-klienter äldre än ett dygn som aldrig fått en
+inloggning, utgångna koder, inloggningar som återkallats eller gått ut för mer än en vecka sedan, loggrader äldre än
+90 dagar, inloggningsförsök äldre än ett dygn och spärrar som gått ut, och hashar personliga länkar som fortfarande
+ligger i klartext.
+
 ## Vad som är statelöst
 
 - **Workern** håller inget i minnet mellan anrop; allt ligger i D1 och R2. Den kan köras i hur många instanser som helst.
+  Undantaget är reserven för rate limits när bindningen saknas, som räknar per isolat.
 - **MCP** är statelös Streamable HTTP: ingen session, ingen `Mcp-Session-Id`. Varje POST bär sin egen inloggning.
 - **Sammanfattning och chatt** sparar inget innehåll. Transkriptet kommer med i varje anrop och chattens historik
   skickas av appen varje gång. Bara antal anrop och tokens per dag sparas (`usage`).

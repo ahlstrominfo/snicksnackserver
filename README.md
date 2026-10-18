@@ -80,7 +80,9 @@ Alla kommandon körs i repots katalog.
    ```
 
    Det du kan behöva ändra är markerat med `BYT` i filen: `account_id` (valfritt), `routes` (valfritt, egen domän) och
-   `database_id` (krävs, i steg 5).
+   `database_id` (krävs, i steg 5). Resten kan stå kvar: storleksgränserna, rate limits (`ratelimits`), spärren efter
+   fel lösenord och den nattliga städningen (`triggers`), se [Var ställer jag in vad?](#var-ställer-jag-in-vad).
+   Har du redan en annan Worker med rate limits på kontot: se till att `namespace_id` (1001–1007) inte krockar.
 
 3. **Logga in i Cloudflare:**
 
@@ -129,8 +131,8 @@ Alla kommandon körs i repots katalog.
    openssl rand -base64 48 | npx wrangler secret put KEY_SECRET
    ```
 
-   `ADMIN_PASSWORD` är lösenordet till admin; välj ett långt (det finns ingen spärr mot gissningar, se
-   [SECURITY.md](SECURITY.md)). `KEY_SECRET` krypterar AI-leverantörernas API-nycklar och signerar ljudlänkar. Spara
+   `ADMIN_PASSWORD` är lösenordet till admin; välj ett långt, till exempel `openssl rand -base64 24` (Workern
+   begränsar försöken, men det är lösenordet som skyddar, se [SECURITY.md](SECURITY.md)). `KEY_SECRET` krypterar AI-leverantörernas API-nycklar och signerar ljudlänkar. Spara
    den inte någon annanstans än i Cloudflare; byts den måste API-nycklarna läggas in igen.
 
 9. **Logga in:** öppna `https://<adressen>/admin` och logga in med lösenordet. Ställ in namn, färg och logga under
@@ -166,7 +168,27 @@ npm run db:migrate:remote   # nya migrationer, om det finns några
 npm run deploy
 ```
 
-Din `wrangler.jsonc` och dina secrets påverkas inte. Titta i `wrangler.example.jsonc` om något nytt har tillkommit.
+Din `wrangler.jsonc` och dina secrets påverkas inte. Titta i `wrangler.example.jsonc` om något nytt har tillkommit
+och för över det till din egen. Från migration 0005: blocken `ratelimits` och `triggers` och de två `LOGIN_LOCK_*` under
+`vars` (utan dem räknar Workern i minnet i stället, och ingen städning körs).
+
+### Var ställer jag in vad?
+
+Tekniska tak ligger i `wrangler.jsonc` och kräver en ny deploy. Beslut ägaren tar ligger i admin och gäller direkt.
+
+| Vad | Var | Standard |
+|---|---|---|
+| Största sändning (`MAX_BYTES`) och största AI-kropp (`AI_MAX_BYTES`) | `vars` i `wrangler.jsonc` | 100 MB, 20 MB |
+| Rate limits per IP, avsändare och nyckel | `ratelimits` i `wrangler.jsonc` (period 10 eller 60 s) | inloggning 5, `/register` 10, `/token` 30, mottagning 30, ogiltiga nycklar 20, AI 10, MCP 60 per minut |
+| Spärren efter fel lösenord | `LOGIN_LOCK_IP`, `LOGIN_LOCK_GLOBAL` i `vars` | 20 fel per IP, 100 för alla, per timme |
+| Den nattliga städningen | `triggers.crons` i `wrangler.jsonc` | 03:17 UTC |
+| Lösenord och krypteringsnyckel | secrets (`npx wrangler secret put`) | – |
+| Namn, färg, logga, vad som tas emot | Admin → Inställningar | – |
+| Standardkvoter per avsändare: AI-anrop per dygn, tokens per 30 dagar, lagring i MB | Admin → Inställningar | obegränsat |
+| Global AI-budget (tokens per 30 dagar för alla) | Admin → Inställningar | ingen |
+| Kvoter för en avsändare, mål, prompter, spärr | Admin → Avsändare | standarden |
+| Nycklar, länkar, OAuth-inloggningar | Admin → Avsändare och Agenter | – |
+| Vad som hänt | Admin → Logg (90 dagar) | – |
 
 ## Lägga till en avsändare
 
@@ -178,7 +200,9 @@ Din `wrangler.jsonc` och dina secrets påverkas inte. Titta i `wrangler.example.
    bara den här gången.
 4. I Snicksnack: **Inställningar → Mottagare → Lägg till mottagare → Skanna QR-kod**. Det går också att klistra in
    länken eller skriva adressen och nyckeln för hand. Sedan finns mottagaren som val när man skickar ett snack.
-5. Tappas nyckeln bort: tryck **Ny nyckel** (den gamla slutar fungera). **Spärra** tar bort nyckeln direkt;
+5. Sidan visar också länken till avsändarens personliga sida (för agentnycklar). Den visas också bara nu; tappas
+   den bort: **Byt länk** under Avsändare.
+6. Tappas nyckeln bort: tryck **Ny nyckel** (den gamla slutar fungera). **Spärra** tar bort nyckeln direkt;
    snacken som redan kommit in ligger kvar.
 
 De mottagna snacken finns under **Snack**, filtrerbara per mål och avsändare. Länken som appen visar efter en
