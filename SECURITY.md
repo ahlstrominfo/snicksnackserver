@@ -23,7 +23,8 @@ det ger mest.
    går ändå att gissa med tid och många adresser.
 2. **En WAF-regel som andra lager.** Workern har egna rate limits (5 inloggningar per minut och IP, 10 registreringar,
    30 token-anrop) och spärrar lösenordsinloggningen en timme efter 20 fel från en adress eller 100 från alla. Workerns
-   gränser räknas per Cloudflare-plats och är ungefärliga, och anropen når ändå Workern. En regel under Cloudflare →
+   gränser räknas per Cloudflare-plats och är ungefärliga (i ett prov gick över hundra anrop igenom innan den slog
+   till), så i praktiken är det spärren i databasen som skyddar lösenordet. Anropen når ändå Workern. En regel under Cloudflare →
    Security → WAF → Rate limiting rules på `/admin/login`, `/authorize` och `/register` (till exempel 5 per minut och
    IP) stoppar dem före Workern och ingår i gratisplanen.
 3. **Cloudflare Access framför admin.** Zero Trust → Access → Applications: en självhostad applikation för
