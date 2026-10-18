@@ -9,6 +9,40 @@ Svenska eller engelska. Du får svar så snart jag kan, och tack i commit-meddel
 
 Det här är ett litet projekt som drivs av en person, utan bug bounty.
 
+## Rekommendationer när du sätter upp
+
+Den som sätter upp en mottagare driver den själv och ansvarar för den. Workern gör det som går att göra i koden (se
+nästa avsnitt), men en del skydd hör hemma i Cloudflare eller hos AI-leverantören. Det här är vad vi rekommenderar,
+i den ordning det ger mest.
+
+**Gör alltid, tar ungefär en timme:**
+
+1. **Långt slumpat lösenord.** `openssl rand -base64 24 | npx wrangler secret put ADMIN_PASSWORD`. Lösenordet är
+   hela skyddet för admin och ägarens OAuth-inloggning, och Workern begränsar inte antalet försök.
+2. **Rate limiting på inloggningarna.** Cloudflare → Security → WAF → Rate limiting rules: en regel på
+   `/admin/login`, `/authorize` och `/register`, till exempel 5 anrop per minut och IP. En regel ingår i gratisplanen.
+3. **Cloudflare Access framför admin.** Zero Trust → Access → Applications: en självhostad applikation för
+   `<din domän>/admin*`, inloggning med engångskod till din e-post eller Google. Gratis upp till 50 användare. Då måste
+   man förbi Access innan lösenordet ens går att prova, och Access loggar varje inloggning.
+4. **HSTS på zonen.** SSL/TLS → Edge Certificates → HTTP Strict Transport Security. Och sätt SSL-läget till Full (strict).
+5. **Egen AI-nyckel med utgiftstak.** Skapa en nyckel bara för mottagaren hos leverantören (Anthropic: en egen
+   workspace med spend limit; OpenAI: en projektnyckel med budget). En avsändare kan annars köra sammanfattning och
+   chatt obegränsat på din nyckel; Workern räknar förbrukningen under Leverantörer men stoppar den inte.
+
+**Gör innan andra än du själv skickar:**
+
+6. **Spärra i stället för att hoppas.** Ge varje person en egen avsändare, så kan du spärra en nyckel utan att de andra
+   påverkas. Byt den personliga länken (`/min/<token>`) om den delats på ett sätt du inte litar på.
+7. **Begränsa vad som skickas.** Sätt `accepts` till bara text under Inställningar om du inte behöver ljudet. Text är
+   några hundra kilobyte, ljud är 60–70 MB per timme och är det som är känsligast.
+8. **Håll kontot säkert.** Cloudflare-kontot ser alla filer i R2 och hela databasen. Tvåfaktor på kontot, och inga
+   fler API-tokens än du behöver.
+9. **Titta i admin då och då.** Under Agenter syns agentnycklar och OAuth-inloggningar med senaste användning;
+   återkalla det du inte känner igen. Under Leverantörer syns förbrukningen.
+
+**Om det ska bli mer än ett privat verktyg:** lägg kvoter per avsändare, en revisionslogg och passkeys i Workern,
+och sätt upp Dependabot på repot. Pull requests för sådant är välkomna.
+
 ## Vad som skyddas och hur
 
 Se också [docs/arkitektur.md](docs/arkitektur.md#nycklar-och-hemligheter).

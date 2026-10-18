@@ -140,6 +140,10 @@ Alla kommandon körs i repots katalog.
 
 Kontrollera att allt svarar: `https://<adressen>/.well-known/snicksnack` ska visa namnet och adresserna.
 
+Servern är din och ansvaret för den är ditt. Innan du ger nycklar till andra: läs
+[rekommendationerna i SECURITY.md](SECURITY.md#rekommendationer-när-du-sätter-upp). De tar en timme i Cloudflare
+och stänger de luckor som Workern själv inte täcker.
+
 ### Egen domän (valfritt)
 
 Har du en domän i Cloudflare kan Workern ligga på en egen adress, till exempel `snack.example.se`. Ta bort
