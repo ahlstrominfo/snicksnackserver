@@ -7,6 +7,7 @@ import { minSida } from "./min";
 import { auktorisera, förfrågan, registrera, resursmetadata, servermetadata, token, återkallaToken } from "./oauth";
 import { chatta, listaPrompter, sammanfatta } from "./ai/anrop";
 import { fel, ikon, receive, targets, wellKnown } from "./protokoll";
+import { städa } from "./stadning";
 
 export default {
   async fetch(req, env, ctx): Promise<Response> {
@@ -74,5 +75,10 @@ export default {
       console.error("Fel i", metod, pathname, e);
       return fel(500, "Internt fel");
     }
+  },
+
+  // Den nattliga städningen (triggers.crons i wrangler.jsonc).
+  async scheduled(_händelse, env): Promise<void> {
+    await städa(env);
   },
 } satisfies ExportedHandler<Env>;

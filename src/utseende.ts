@@ -267,4 +267,9 @@ document.addEventListener("click", (e) => {
   const k = e.target.closest("[data-kopiera]");
   if (k && navigator.clipboard) navigator.clipboard.writeText(k.dataset.kopiera).then(() => { k.textContent = "Kopierat"; });
 });
+// Bekräftelse före farliga formulär (inga inline-händelser: CSP tillåter bara skript med nonce).
+document.addEventListener("submit", (e) => {
+  const t = e.target.dataset && e.target.dataset.bekrafta;
+  if (t && !confirm(t)) e.preventDefault();
+});
 `;

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { BAS, anropa, paket, pngRubrik, skapaAvsändare, skapaMål, skicka, transkript } from "./hjalp";
+import { sha256Hex } from "../src/krypto";
+import { BAS, anropa, m4a, paket, pngRubrik, skapaAvsändare, skapaMål, skicka, transkript } from "./hjalp";
 
 async function loggaIn(lösen = "testlösen"): Promise<Response> {
   return anropa("/admin/login", { method: "POST", headers: { Origin: BAS }, body: new URLSearchParams({ password: lösen }) });
@@ -93,7 +94,7 @@ describe("admin-flödet", () => {
   it("visar mottagna snack och laddar ner filerna", async () => {
     await skapaMål("lista", "Lista");
     const nyckel = await skapaAvsändare("dora", ["lista"]);
-    const svar = await skicka("lista", nyckel, paket(transkript("L1", "Veckomöte <b>"), { text: "# Veckomöte\n\nHej", ljud: new Uint8Array([7, 7, 7]) }), "L1");
+    const svar = await skicka("lista", nyckel, paket(transkript("L1", "Veckomöte <b>"), { text: "# Veckomöte\n\nHej", ljud: m4a(7, 7, 7) }), "L1");
     const { url } = await svar.json<{ url: string }>();
     const kaka = await cookie();
 
@@ -110,11 +111,13 @@ describe("admin-flödet", () => {
     const ljud = await anropa("/admin/fil/lista/dora/L1/audio.m4a?ladda=1", { headers: { Cookie: kaka } });
     expect(ljud.status).toBe(200);
     expect(ljud.headers.get("Content-Disposition")).toContain("attachment");
-    expect(new Uint8Array(await ljud.arrayBuffer())).toEqual(new Uint8Array([7, 7, 7]));
+    expect(new Uint8Array(await ljud.arrayBuffer())).toEqual(m4a(7, 7, 7));
 
     const del = await anropa("/admin/fil/lista/dora/L1/audio.m4a", { headers: { Cookie: kaka, Range: "bytes=1-" } });
     expect(del.status).toBe(206);
-    expect(del.headers.get("Content-Range")).toBe("bytes 1-2/3");
+    expect(del.headers.get("Content-Range")).toBe("bytes 1-14/15");
+    expect(del.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(del.headers.get("Content-Security-Policy")).toContain("sandbox");
 
     expect((await anropa("/admin/fil/lista/dora/L1/annat.txt", { headers: { Cookie: kaka } })).status).toBe(404);
   });
@@ -220,14 +223,30 @@ describe("admin för agenter", () => {
     expect(decodeURIComponent(om.headers.get("Location")!)).toContain("Sökindexet är ombyggt");
   });
 
-  it("avsändarsidan visar den personliga länken och kan byta den", async () => {
+  it("den personliga länken visas en gång, sparas som hash och kan bytas", async () => {
     const kaka = await cookie();
     await skapaAvsändare("fia", []);
     const sida = await (await anropa("/admin/avsandare", { headers: { Cookie: kaka } })).text();
-    const länk = (await env.DB.prepare("SELECT page_token FROM senders WHERE id = 'fia'").first<{ page_token: string }>())!.page_token;
-    expect(sida).toContain(`${BAS}/min/${länk}`);
+    expect(sida).toContain("Ingen länk än.");
+    const ny = await (await post("/admin/avsandare/fia/ny-sida", kaka, new URLSearchParams())).text();
+    const länk = new RegExp(`${BAS}/min/([A-Za-z0-9_-]{32})`).exec(ny)![1];
+    expect(ny).toContain("Länken visas bara nu");
+    const rad = (await env.DB.prepare("SELECT page_token, page_hash FROM senders WHERE id = 'fia'").first<{ page_token: string | null; page_hash: string }>())!;
+    expect(rad.page_token).toBeNull();
+    expect(rad.page_hash).toBe(await sha256Hex(länk));
+    expect(await (await anropa("/admin/avsandare", { headers: { Cookie: kaka } })).text()).not.toContain(länk);
     expect((await anropa(`/min/${länk}`)).status).toBe(200);
     await post("/admin/avsandare/fia/ny-sida", kaka, new URLSearchParams());
     expect((await anropa(`/min/${länk}`)).status).toBe(404);
+  });
+
+  it("gamla länkar i klartext hashas och fungerar fortfarande", async () => {
+    await skapaAvsändare("gun", []);
+    await env.DB.prepare("UPDATE senders SET page_token = 'gammal-lank-i-klartext-0123456789' WHERE id = 'gun'").run();
+    expect((await anropa("/min/gammal-lank-i-klartext-0123456789")).status).toBe(200);
+    const rad = (await env.DB.prepare("SELECT page_token, page_hash FROM senders WHERE id = 'gun'").first<{ page_token: string | null; page_hash: string }>())!;
+    expect(rad.page_token).toBeNull();
+    expect(rad.page_hash).toBe(await sha256Hex("gammal-lank-i-klartext-0123456789"));
+    expect((await anropa("/min/gammal-lank-i-klartext-0123456789")).status).toBe(200);
   });
 });

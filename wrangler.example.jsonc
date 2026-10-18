@@ -23,8 +23,33 @@
     // Största kropp i byte. Workers tar högst 100 MB på gratis- och Pro-planen.
     "MAX_BYTES": "104857600",
     // Största kropp för summarize och chat (transcript.json), i byte.
-    "AI_MAX_BYTES": "20971520"
+    "AI_MAX_BYTES": "20971520",
+    // Spärren efter misslyckade adminlösenord (admin och /authorize), räknat i D1 den senaste timmen. Nås gränsen
+    // svarar inloggningen 429 i en timme: per IP-adress, och för alla tillsammans (skydd mot många adresser).
+    "LOGIN_LOCK_IP": "20",
+    "LOGIN_LOCK_GLOBAL": "100"
   },
+  // Cloudflares rate limiting för Workers (src/ratelimit.ts). Räknas per Cloudflare-plats och är ungefärlig; ett tak
+  // mot brute force och överbelastning, inte en exakt kvot. period får bara vara 10 eller 60 sekunder. namespace_id är
+  // ett eget heltal per gräns, unikt i kontot. Saknas en bindning används en räknare i minnet med samma värden.
+  "ratelimits": [
+    // Adminlösenordet i /admin/login och /authorize, per IP.
+    { "name": "RL_INLOGGNING", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    // OAuth-registrering, per IP.
+    { "name": "RL_REGISTER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+    // OAuth /token, per IP.
+    { "name": "RL_TOKEN", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
+    // Mottagning, per avsändare.
+    { "name": "RL_MOTTAGNING", "namespace_id": "1004", "simple": { "limit": 30, "period": 60 } },
+    // Ogiltiga nycklar, tokens och länkar (gissning), per IP.
+    { "name": "RL_GISSNING", "namespace_id": "1005", "simple": { "limit": 20, "period": 60 } },
+    // summarize och chat, per avsändare.
+    { "name": "RL_AI", "namespace_id": "1006", "simple": { "limit": 10, "period": 60 } },
+    // MCP, per agentnyckel eller OAuth-inloggning.
+    { "name": "RL_MCP", "namespace_id": "1007", "simple": { "limit": 60, "period": 60 } }
+  ],
+  // Städningen (src/stadning.ts) en gång per natt, tid i UTC.
+  "triggers": { "crons": ["17 3 * * *"] },
   "r2_buckets": [
     // Hinken skapas med `npx wrangler r2 bucket create snicksnack-mottagare`. Byter du namn: byt här också.
     { "binding": "FILER", "bucket_name": "snicksnack-mottagare" }

@@ -1,8 +1,10 @@
 // Extern AI via mottagaren (docs/protokoll.md, avsnitt 4–6): promptlistan, summarize och chat.
 // Statelöst: inget av innehållet sparas, bara antal anrop och tokens i tabellen usage.
 
-import { hämtaInställningar, nu } from "../db";
-import { fel, inloggadAvsändare, json } from "../protokoll";
+import { hämtaInställningar, nu, type Avsändare } from "../db";
+import { aiStopp } from "../kvoter";
+import { fel, förMånga, inloggadAvsändare, json, ogiltigNyckel } from "../protokoll";
+import { tillåt } from "../ratelimit";
 import {
   hämtaLeverantör,
   LeverantörsFel,
@@ -66,7 +68,7 @@ export async function promptsorter(db: D1Database): Promise<Set<string>> {
 
 export async function listaPrompter(req: Request, env: Env): Promise<Response> {
   const avsändare = await inloggadAvsändare(req, env);
-  if (!avsändare) return fel(401, "Ogiltig nyckel");
+  if (!avsändare) return ogiltigNyckel(req, env);
   const prompter = await prompterFörAvsändare(env.DB, avsändare.id);
   return json({
     prompts: prompter.map((p) => ({ id: p.id, name: p.name, description: p.description, kind: p.kind, live: !!p.live })),
@@ -86,6 +88,13 @@ async function läsKropp(req: Request, env: Env): Promise<Record<string, unknown
     // faller igenom
   }
   return fel(400, "Kroppen ska vara ett JSON-objekt");
+}
+
+/** Rate limit och kvoter före ett AI-anrop: 429 med en text som appen visar, eller null. */
+async function aiSpärr(env: Env, avsändare: Avsändare): Promise<Response | null> {
+  if (!(await tillåt(env, "ai", avsändare.id))) return förMånga("ai", "För många AI-anrop på kort tid. Vänta en minut och försök igen.");
+  const stopp = await aiStopp(env.DB, avsändare);
+  return stopp ? fel(429, stopp) : null;
 }
 
 async function leverantörFör(env: Env, id: string): Promise<Leverantör> {
@@ -114,7 +123,9 @@ async function räkna(
 
 export async function sammanfatta(req: Request, env: Env, ctx: ExecutionContext, rådId: string): Promise<Response> {
   const avsändare = await inloggadAvsändare(req, env);
-  if (!avsändare) return fel(401, "Ogiltig nyckel");
+  if (!avsändare) return ogiltigNyckel(req, env);
+  const spärr = await aiSpärr(env, avsändare);
+  if (spärr) return spärr;
   let id: string;
   try {
     id = decodeURIComponent(rådId);
@@ -190,7 +201,9 @@ const sse = (data: unknown) => `data: ${JSON.stringify(data)}\n\n`;
 
 export async function chatta(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const avsändare = await inloggadAvsändare(req, env);
-  if (!avsändare) return fel(401, "Ogiltig nyckel");
+  if (!avsändare) return ogiltigNyckel(req, env);
+  const spärr = await aiSpärr(env, avsändare);
+  if (spärr) return spärr;
   const kropp = await läsKropp(req, env);
   if (kropp instanceof Response) return kropp;
 

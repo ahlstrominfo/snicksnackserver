@@ -10,6 +10,8 @@ import {
 } from "./db";
 import { promptsorter } from "./ai/anrop";
 import { efterMottagning } from "./efter-mottagning";
+import { lagringStopp } from "./kvoter";
+import { klientIp, tillåt, väntetid, type Gräns } from "./ratelimit";
 import { indexera } from "./sok";
 
 export const IKON_NYCKEL = "_config/icon.png";
@@ -17,11 +19,26 @@ export const IKON_NYCKEL = "_config/icon.png";
 export function json(kropp: unknown, status = 200, huvuden: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(kropp), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...huvuden },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...huvuden,
+    },
   });
 }
 
-export const fel = (status: number, text: string) => json({ error: text }, status);
+export const fel = (status: number, text: string, huvuden: Record<string, string> = {}) => json({ error: text }, status, huvuden);
+
+/** 429 med Retry-After när en rate limit nåtts. */
+export const förMånga = (gräns: Gräns, text = "För många anrop. Vänta en minut och försök igen.") =>
+  fel(429, text, { "Retry-After": String(väntetid(gräns)) });
+
+/** 401 för en ogiltig nyckel; 429 när samma adress gissat för många gånger (gissning, per IP). */
+export async function ogiltigNyckel(req: Request, env: Env): Promise<Response> {
+  if (!(await tillåt(env, "gissning", klientIp(req)))) return förMånga("gissning", "För många försök med ogiltig nyckel. Vänta en minut.");
+  return fel(401, "Ogiltig nyckel");
+}
 
 export async function wellKnown(req: Request, env: Env): Promise<Response> {
   const origin = new URL(req.url).origin;
@@ -53,7 +70,7 @@ export async function inloggadAvsändare(req: Request, env: Env): Promise<Avsän
 
 export async function targets(req: Request, env: Env): Promise<Response> {
   const avsändare = await inloggadAvsändare(req, env);
-  if (!avsändare) return fel(401, "Ogiltig nyckel");
+  if (!avsändare) return ogiltigNyckel(req, env);
   const mål = await målFörAvsändare(env.DB, avsändare.id);
   return json({ targets: mål.map((m) => (m.grp ? { id: m.id, name: m.name, group: m.grp } : { id: m.id, name: m.name })) });
 }
@@ -63,8 +80,34 @@ export function rensaSnackId(id: string): string {
   return id.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_").slice(0, 128);
 }
 
-function ärWav(fil: File): boolean {
-  return /wav/i.test(fil.type) || /\.wav$/i.test(fil.name);
+/** Ljudets format ur de första byten: RIFF…WAVE för wav, "ftyp" i byte 4–8 för m4a (MPEG-4). Annars null. */
+export function ljudformat(b: Uint8Array): "wav" | "m4a" | null {
+  const ascii = (från: number, till: number) => String.fromCharCode(...b.subarray(från, till));
+  if (b.length >= 12 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "wav";
+  if (b.length >= 8 && ascii(4, 8) === "ftyp") return "m4a";
+  return null;
+}
+
+const ärStr = (v: unknown) => v === undefined || v === null || typeof v === "string";
+const ärTal = (v: unknown) => v === undefined || v === null || (typeof v === "number" && isFinite(v));
+
+/** Kontrollerar att transkriptet har rimliga fält (docs/protokoll.md). Felet som text, eller null om det går bra. */
+export function transkriptFel(t: Record<string, unknown>): string | null {
+  if (t.id !== undefined && t.id !== null && (typeof t.id !== "string" || !t.id.trim())) return "transcript.id ska vara en sträng";
+  if (!Array.isArray(t.words)) return "transcript.words ska vara en lista";
+  for (const o of t.words) {
+    if (!o || typeof o !== "object" || Array.isArray(o)) return "transcript.words ska vara en lista med objekt";
+    const ord = o as Record<string, unknown>;
+    if (typeof ord.text !== "string") return "Varje ord i transcript.words ska ha text";
+    if (!ärTal(ord.start) || !ärTal(ord.end)) return "start och end i transcript.words ska vara tal";
+  }
+  for (const f of ["title", "recorded_at", "language", "text", "note"]) if (!ärStr(t[f])) return `transcript.${f} ska vara en sträng`;
+  if (!ärTal(t.duration)) return "transcript.duration ska vara ett tal";
+  if (t.tags !== undefined && t.tags !== null && (!Array.isArray(t.tags) || !t.tags.every((x) => typeof x === "string"))) {
+    return "transcript.tags ska vara en lista med strängar";
+  }
+  if (t.summaries !== undefined && t.summaries !== null && !Array.isArray(t.summaries)) return "transcript.summaries ska vara en lista";
+  return null;
 }
 
 interface Transkript {
@@ -80,7 +123,11 @@ const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 
 export async function receive(req: Request, env: Env, ctx: ExecutionContext, rådMål: string): Promise<Response> {
   const avsändare = await inloggadAvsändare(req, env);
-  if (!avsändare) return fel(401, "Ogiltig nyckel");
+  if (!avsändare) return ogiltigNyckel(req, env);
+  // 503 och inte 429: appen ger upp en sändning vid 4xx men försöker igen senare vid 5xx (docs/protokoll.md).
+  if (!(await tillåt(env, "mottagning", avsändare.id))) {
+    return fel(503, "Mottagaren tar emot för många snack just nu. Appen försöker igen om en stund.", { "Retry-After": String(väntetid("mottagning")) });
+  }
 
   let målId: string;
   try {
@@ -129,6 +176,8 @@ export async function receive(req: Request, env: Env, ctx: ExecutionContext, rå
     } catch {
       return fel(400, "transcript är inte giltig JSON");
     }
+    const problem = transkriptFel(transkript as Record<string, unknown>);
+    if (problem) return fel(400, problem);
   }
 
   const råttId = req.headers.get("Idempotency-Key")?.trim() || str(transkript.id) || "";
@@ -137,6 +186,31 @@ export async function receive(req: Request, env: Env, ctx: ExecutionContext, rå
 
   const { accepts } = await hämtaInställningar(env.DB);
   const prefix = `${mål.id}/${avsändare.id}/${snackId}/`;
+
+  // Ljudet ska vara wav eller m4a på riktigt, inte bara till namnet.
+  let wav = false;
+  const medLjud = !!ljudFil && ljudFil.size > 0 && accepts.includes("audio");
+  if (ljudFil && accepts.includes("audio")) {
+    const format = ljudformat(new Uint8Array(await ljudFil.slice(0, 16).arrayBuffer()));
+    if (!format) return fel(415, "Ljudet ska vara m4a (MPEG-4) eller wav (RIFF/WAVE).");
+    wav = format === "wav";
+  }
+
+  // Lagringskvoten: det som skickas nu, minus filerna det ersätter.
+  const ersätts = new Set<string>();
+  if (transkriptText !== null && accepts.includes("transcript")) ersätts.add("transcript.json");
+  if (textFil && accepts.includes("text")) ersätts.add("text.md");
+  if (medLjud) ["audio.m4a", "audio.wav"].forEach((n) => ersätts.add(n));
+  const nya =
+    (accepts.includes("transcript") ? (transkriptFil?.size ?? 0) : 0) +
+    (accepts.includes("text") ? (textFil?.size ?? 0) : 0) +
+    (medLjud ? ljudFil!.size : 0);
+  const före = await env.FILER.list({ prefix });
+  const gamla = före.objects.filter((o) => ersätts.has(o.key.slice(prefix.length))).reduce((s, o) => s + o.size, 0);
+  // 429 och inte 413: appen visar då serverns text (413 blir bara "för stort").
+  const fullt = await lagringStopp(env.DB, avsändare.id, nya, gamla);
+  if (fullt) return fel(429, fullt);
+
   const skrivningar: Promise<unknown>[] = [];
 
   if (transkriptText !== null && accepts.includes("transcript")) {
@@ -155,7 +229,6 @@ export async function receive(req: Request, env: Env, ctx: ExecutionContext, rå
     );
   }
   if (ljudFil && accepts.includes("audio")) {
-    const wav = ärWav(ljudFil);
     skrivningar.push(
       env.FILER.put(prefix + (wav ? "audio.wav" : "audio.m4a"), ljudFil, {
         httpMetadata: { contentType: wav ? "audio/wav" : "audio/mp4" },

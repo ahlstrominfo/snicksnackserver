@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BAS, anropa, paket, pngRubrik, skapaAvsändare, skapaMål, skicka, transkript } from "./hjalp";
+import { BAS, anropa, m4a, paket, pngRubrik, skapaAvsändare, skapaMål, skicka, transkript, wav } from "./hjalp";
 
 let annasNyckel: string;
 let bosseNyckel: string;
@@ -87,7 +87,7 @@ describe("receive", () => {
   });
 
   it("sparar delarna i R2 och indexet, och svarar med id och url", async () => {
-    const ljud = new Uint8Array([1, 2, 3, 4, 5]);
+    const ljud = m4a(1, 2, 3, 4, 5);
     const r = await skicka(
       "umea-energi",
       annasNyckel,
@@ -124,12 +124,12 @@ describe("receive", () => {
   });
 
   it("omsändning skriver över i stället för att dubblera", async () => {
-    const första = await skicka("inbox", annasNyckel, paket(transkript("S1", "Gammal titel"), { text: "gammal", ljud: new Uint8Array([1]) }), "S1");
+    const första = await skicka("inbox", annasNyckel, paket(transkript("S1", "Gammal titel"), { text: "gammal", ljud: m4a(1) }), "S1");
     expect(första.status).toBe(201);
     const andra = await skicka(
       "inbox",
       annasNyckel,
-      paket(transkript("S1", "Ny titel"), { text: "ny", ljud: new Uint8Array([9, 9]), ljudtyp: "audio/wav", ljudnamn: "S1.wav" }),
+      paket(transkript("S1", "Ny titel"), { text: "ny", ljud: wav(9, 9), ljudtyp: "audio/wav", ljudnamn: "S1.wav" }),
       "S1",
     );
     expect(andra.status).toBe(200);

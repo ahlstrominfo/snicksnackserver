@@ -6,8 +6,14 @@ import { nyNyckel, sha256Hex } from "../src/krypto";
 
 export const BAS = "https://mottagare.example";
 
+let nästaIp = 1;
+
+/** Ett anrop till Workern. Varje anrop får en egen IP-adress (CF-Connecting-IP) om testet inte anger en, så att
+ * rate limits per IP inte slår till mellan testerna. */
 export function anropa(väg: string, init?: RequestInit): Promise<Response> {
-  return (exports as any).default.fetch(new Request(BAS + väg, { redirect: "manual", ...init }));
+  const huvuden = new Headers(init?.headers);
+  if (!huvuden.has("CF-Connecting-IP")) huvuden.set("CF-Connecting-IP", `10.0.${Math.floor(nästaIp / 250) % 250}.${(nästaIp++ % 250) + 1}`);
+  return (exports as any).default.fetch(new Request(BAS + väg, { redirect: "manual", ...init, headers: huvuden }));
 }
 
 export async function skapaMål(id: string, namn: string, grupp: string | null = null) {
@@ -80,4 +86,16 @@ export function pngRubrik(bredd: number, höjd: number): Uint8Array {
   v.setUint32(20, höjd);
   b.set([8, 6, 0, 0, 0], 24);
   return b;
+}
+
+const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
+
+/** Början av en m4a (MPEG-4: "ftyp" i byte 4–8) följd av bytes. */
+export function m4a(...bytes: number[]): Uint8Array {
+  return new Uint8Array([0, 0, 0, 0x18, ...ascii("ftypM4A "), ...bytes]);
+}
+
+/** Början av en wav (RIFF…WAVE) följd av bytes. */
+export function wav(...bytes: number[]): Uint8Array {
+  return new Uint8Array([...ascii("RIFF"), 0x24, 0, 0, 0, ...ascii("WAVEfmt "), ...bytes]);
 }

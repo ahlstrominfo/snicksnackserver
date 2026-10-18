@@ -15,6 +15,24 @@ export interface Inställningar {
   chatProvider: string | null;
   chatModel: string | null;
   chatSystem: string;
+  /** Standardkvoter för avsändare utan egna (null = obegränsat). */
+  kvoter: Kvoter;
+  /** Global AI-budget i tokens per 30 dagar för alla avsändare tillsammans (null = ingen). */
+  aiBudget: number | null;
+}
+
+/** Kvoter per avsändare: AI-anrop per dygn (UTC), tokens per 30 dagar och lagring i MB. null = obegränsat. */
+export interface Kvoter {
+  aiAnropDag: number | null;
+  aiTokens30: number | null;
+  lagringMB: number | null;
+}
+
+/** Ett heltal ≥ 0 ur ett textvärde, annars null (tomt = obegränsat). */
+export function heltal(v: string | null | undefined): number | null {
+  if (v === null || v === undefined || v.trim() === "") return null;
+  const n = Number(v.replace(/[\s ]/g, ""));
+  return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
 export const STANDARDNAMN = "Snicksnack-mottagare";
@@ -37,6 +55,12 @@ export async function hämtaInställningar(db: D1Database): Promise<Inställning
     chatProvider: m.get("chat_provider") || null,
     chatModel: m.get("chat_model") || null,
     chatSystem: m.get("chat_system") || "",
+    kvoter: {
+      aiAnropDag: heltal(m.get("quota_ai_requests_day")),
+      aiTokens30: heltal(m.get("quota_ai_tokens_30d")),
+      lagringMB: heltal(m.get("quota_storage_mb")),
+    },
+    aiBudget: heltal(m.get("ai_budget_tokens_30d")),
   };
 }
 

@@ -7,6 +7,7 @@ import { MÅL_ID, nu, slug, type Inställningar } from "./db";
 import { html, htmlSvar, raw, type Raw } from "./html";
 import { fältrad, rubrik, tomt, valgrupp, växel } from "./utseende";
 import { kryptera, maskera } from "./krypto";
+import { revisionslogg } from "./revision";
 
 const TYPNAMN: Record<Typ, string> = {
   anthropic: "Anthropic (Claude)",
@@ -22,12 +23,12 @@ export async function adminAi(req: Request, env: Env, s: Inställningar, delar: 
   if (delar[0] === "leverantorer") {
     if (delar.length === 1) return post ? skapaLeverantör(req, env, s, url) : leverantörSida(env, s, url);
     if (delar.length === 2 && post) return ändraLeverantör(req, env, s, url, delar[1]);
-    if (delar.length === 3 && delar[2] === "ta-bort" && post) return taBortLeverantör(env, s, delar[1]);
+    if (delar.length === 3 && delar[2] === "ta-bort" && post) return taBortLeverantör(req, env, s, delar[1]);
   }
   if (delar[0] === "prompter") {
     if (delar.length === 1) return post ? skapaPrompt(req, env, s, url) : promptSida(env, s, url);
     if (delar.length === 2 && post) return ändraPrompt(req, env, s, url, delar[1]);
-    if (delar.length === 3 && delar[2] === "ta-bort" && post) return taBortPrompt(env, delar[1]);
+    if (delar.length === 3 && delar[2] === "ta-bort" && post) return taBortPrompt(req, env, delar[1]);
   }
   return null;
 }
@@ -105,7 +106,7 @@ async function leverantörSida(env: Env, s: Inställningar, url: URL, fel: strin
                   </summary>
                   <div class="postinnehall">
                     <form id="ta-bort-lev-${i}" method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}/ta-bort"
-                      onsubmit="return confirm('Ta bort leverantören?')"></form>
+                      data-bekrafta="Ta bort leverantören?"></form>
                     <form method="post" action="/admin/leverantorer/${encodeURIComponent(l.id)}">
                       ${fältrad("Namn", html`<input type="text" name="name" value="${l.name}" required />`)}
                       ${fältrad("Typ", html`<select name="type">${typval(l.type)}</select>`)}
@@ -202,6 +203,7 @@ async function skapaLeverantör(req: Request, env: Env, s: Inställningar, url: 
     )
     .run();
   if (!r.meta.changes) return leverantörSida(env, s, url, `Det finns redan en leverantör med id "${id}".`, 409);
+  await revisionslogg(env, req, "leverantor.andrad", `${namn} (${id}) skapad${nyckel ? `, API-nyckel ${maskera(nyckel)}` : ""}`);
   return medMeddelande("/admin/leverantorer", `${namn} är skapad.`);
 }
 
@@ -224,14 +226,21 @@ async function ändraLeverantör(req: Request, env: Env, s: Inställningar, url:
   } else if (f.has("remove_key")) {
     await env.DB.prepare("UPDATE providers SET api_key = NULL, key_hint = NULL WHERE id = ?").bind(id).run();
   }
+  await revisionslogg(
+    env,
+    req,
+    "leverantor.andrad",
+    `${namn} (${id})${nyckel ? `, ny API-nyckel ${maskera(nyckel)}` : f.has("remove_key") ? ", API-nyckeln borttagen" : ""}`,
+  );
   return medMeddelande("/admin/leverantorer", `${namn} är sparad.`);
 }
 
-async function taBortLeverantör(env: Env, s: Inställningar, id: string): Promise<Response> {
+async function taBortLeverantör(req: Request, env: Env, s: Inställningar, id: string): Promise<Response> {
   const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM prompts WHERE provider_id = ?").bind(id).first<{ n: number }>();
   if (n?.n) return medMeddelande("/admin/leverantorer", `Leverantören används av ${n.n} prompter; ändra dem först.`);
   if (s.chatProvider === id) return medMeddelande("/admin/leverantorer", "Leverantören används för fri fråga under Inställningar.");
   await env.DB.prepare("DELETE FROM providers WHERE id = ?").bind(id).run();
+  await revisionslogg(env, req, "leverantor.andrad", `${id} borttagen`);
   return medMeddelande("/admin/leverantorer", "Leverantören är borttagen.");
 }
 
@@ -293,7 +302,7 @@ async function promptSida(env: Env, s: Inställningar, url: URL, fel: string | n
                   </summary>
                   <div class="postinnehall">
                     <form id="ta-bort-prompt-${i}" method="post" action="/admin/prompter/${encodeURIComponent(p.id)}/ta-bort"
-                      onsubmit="return confirm('Ta bort prompten?')"></form>
+                      data-bekrafta="Ta bort prompten?"></form>
                     <form method="post" action="/admin/prompter/${encodeURIComponent(p.id)}">
                       ${fälten(p, valda)}
                       <p class="tips">Id <code>${p.id}</code></p>
@@ -378,6 +387,7 @@ async function skapaPrompt(req: Request, env: Env, s: Inställningar, url: URL):
     .run();
   if (!r.meta.changes) return promptSida(env, s, url, `Det finns redan en prompt med id "${id}".`, 409);
   await sättAvsändare(env.DB, id, flera(f, "senders"));
+  await revisionslogg(env, req, "prompt.andrad", `${p.name} (${id}) skapad`);
   return medMeddelande("/admin/prompter", `Prompten ${p.name} är skapad.`);
 }
 
@@ -393,13 +403,15 @@ async function ändraPrompt(req: Request, env: Env, s: Inställningar, url: URL,
     .run();
   if (!r.meta.changes) throw new EjFunnen();
   await sättAvsändare(env.DB, id, flera(f, "senders"));
+  await revisionslogg(env, req, "prompt.andrad", `${p.name} (${id})`);
   return medMeddelande("/admin/prompter", `${p.name} är sparad.`);
 }
 
-async function taBortPrompt(env: Env, id: string): Promise<Response> {
+async function taBortPrompt(req: Request, env: Env, id: string): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM sender_prompts WHERE prompt_id = ?").bind(id),
     env.DB.prepare("DELETE FROM prompts WHERE id = ?").bind(id),
   ]);
+  await revisionslogg(env, req, "prompt.andrad", `${id} borttagen`);
   return medMeddelande("/admin/prompter", "Prompten är borttagen.");
 }

@@ -6,6 +6,7 @@ import type { Inställningar } from "./db";
 import { html, htmlSvar, raw } from "./html";
 import { inloggningslista, instruktioner } from "./min";
 import { inloggningar, återkallaInloggning } from "./oauth";
+import { revisionslogg } from "./revision";
 import { byggOmIndex } from "./sok";
 import { fältrad, rubrik, tomt } from "./utseende";
 
@@ -14,10 +15,12 @@ export async function adminAgenter(req: Request, env: Env, s: Inställningar, de
   if (delar.length === 1) return post ? skapa(req, env, s, url) : visa(env, s, url, null);
   if (delar.length === 3 && delar[2] === "sparra" && post) {
     if (!(await spärraAgentnyckel(env.DB, delar[1]))) throw new EjFunnen();
+    await revisionslogg(env, req, "agentnyckel.sparrad", `Nyckel ${delar[1]}`);
     return medMeddelande("/admin/agenter", "Nyckeln är spärrad.");
   }
   if (delar.length === 4 && delar[1] === "klienter" && delar[3] === "aterkalla" && post) {
     if (!(await återkallaInloggning(env.DB, delar[2]))) throw new EjFunnen();
+    await revisionslogg(env, req, "oauth.aterkallad", `Inloggning ${delar[2]}`);
     return medMeddelande("/admin/agenter", "Inloggningen är återkallad.");
   }
   if (delar.length === 2 && delar[1] === "sokindex" && post) {
@@ -31,6 +34,7 @@ async function skapa(req: Request, env: Env, s: Inställningar, url: URL): Promi
   const f = await formulär(req);
   const namn = fält(f, "name") || "Agent";
   const nyckel = await skapaAgentnyckel(env.DB, "owner", namn);
+  await revisionslogg(env, req, "agentnyckel.skapad", `${namn} (ägarens, ser allt), …${nyckel.slice(-4)}`);
   return visa(env, s, url, { namn, nyckel });
 }
 
@@ -55,7 +59,7 @@ async function visa(env: Env, s: Inställningar, url: URL, ny: { namn: string; n
     ${k.revoked_at
       ? ""
       : html`<form method="post" action="/admin/agenter/${encodeURIComponent(k.id)}/sparra"
-          onsubmit="return confirm('Spärra nyckeln? Agenten slutar fungera direkt.')"><button class="farlig liten">Spärra</button></form>`}
+          data-bekrafta="Spärra nyckeln? Agenten slutar fungera direkt."><button class="farlig liten">Spärra</button></form>`}
   </div>`;
 
   return htmlSvar(

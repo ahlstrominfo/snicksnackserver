@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { skapaAgentnyckel, sidtoken } from "../src/agenter";
+import { skapaAgentnyckel, bytSidtoken } from "../src/agenter";
 import { base64url } from "../src/krypto";
 import { BAS, anropa, paket, skapaAvsändare, skapaMål, skicka, transkript } from "./hjalp";
 
@@ -102,7 +102,7 @@ beforeAll(async () => {
   const bosse = await skapaAvsändare("o-bosse", ["o-inbox"]);
   await skicka("o-inbox", anna, paket({ ...transkript("OA1", "Annas snack"), text: "Annas text." }), "OA1");
   await skicka("o-inbox", bosse, paket({ ...transkript("OB1", "Bosses snack"), text: "Bosses text." }), "OB1");
-  annasLänk = `${BAS}/min/${await sidtoken(env.DB, "o-anna")}`;
+  annasLänk = `${BAS}/min/${await bytSidtoken(env.DB, "o-anna")}`;
   annasAgent = await skapaAgentnyckel(env.DB, "o-anna", "Annas agent");
 });
 
@@ -346,7 +346,7 @@ describe("/mcp med OAuth", () => {
   it("en spärrad avsändares inloggning slutar fungera", async () => {
     const nyckel = await skapaAvsändare("o-cissi", ["o-inbox"]);
     expect(nyckel).toBeTruthy();
-    const länk = `${BAS}/min/${await sidtoken(env.DB, "o-cissi")}`;
+    const länk = `${BAS}/min/${await bytSidtoken(env.DB, "o-cissi")}`;
     const t = await inloggning({ val: "avsandare", inloggning: länk });
     expect((await rpc(t.access_token, "tools/list")).status).toBe(200);
     await env.DB.prepare("UPDATE senders SET key_hash = NULL WHERE id = 'o-cissi'").run();

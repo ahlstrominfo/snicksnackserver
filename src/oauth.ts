@@ -3,13 +3,16 @@
 // /token (authorization_code och refresh_token) och /revoke (RFC 7009). Allt i D1 (migration 0004); tokens sparas
 // bara som SHA-256, som agentnycklarna. Inloggningen är adminlösenordet (ägaren) eller avsändarens personliga länk.
 
-import { AGENTPREFIX, type Omfång } from "./agenter";
+import { AGENTPREFIX, avsändareFrånSidtoken, type Omfång } from "./agenter";
 import { adminInloggad } from "./admin";
 import { hämtaInställningar, nu } from "./db";
 import { html, htmlSvar, raw, type Raw } from "./html";
 import { base64url, läsCookie, rättLösenord, sha256Hex, slumptoken } from "./krypto";
-import { enkelSida } from "./min";
+import { enkelSida, förMångaSida } from "./min";
 import { json } from "./protokoll";
+import { klientIp, tillåt, väntetid } from "./ratelimit";
+import { revisionslogg } from "./revision";
+import { lyckad, misslyckad, spärrad } from "./sparr";
 import { fältrad, rubrik } from "./utseende";
 
 export const ACCESSPREFIX = "ssk_oauth_";
@@ -28,11 +31,10 @@ const CORS = {
   "Access-Control-Max-Age": "86400",
 };
 
+// CSP, X-Frame-Options och de andra säkerhetshuvudena sätter htmlSvar.
 const SIDHUVUDEN = {
   "Referrer-Policy": "same-origin",
   "X-Robots-Tag": "noindex",
-  "X-Frame-Options": "DENY",
-  "Content-Security-Policy": "frame-ancestors 'none'",
 };
 
 const sekunderFram = (s: number) => new Date(Date.now() + s * 1000).toISOString();
@@ -123,10 +125,14 @@ function sammaRedirect(registrerad: string, given: string): boolean {
   }
 }
 
-const oauthfel = (status: number, fel: string, beskrivning?: string) =>
-  json(beskrivning ? { error: fel, error_description: beskrivning } : { error: fel }, status, { ...CORS, Pragma: "no-cache" });
+const oauthfel = (status: number, fel: string, beskrivning?: string, huvuden: Record<string, string> = {}) =>
+  json(beskrivning ? { error: fel, error_description: beskrivning } : { error: fel }, status, { ...CORS, Pragma: "no-cache", ...huvuden });
+
+const förMånga = (gräns: "register" | "token") =>
+  oauthfel(429, "slow_down", "För många anrop. Vänta en minut och försök igen.", { "Retry-After": String(väntetid(gräns)) });
 
 export async function registrera(req: Request, env: Env): Promise<Response> {
+  if (!(await tillåt(env, "register", klientIp(req)))) return förMånga("register");
   const text = await req.text();
   if (text.length > 20_000) return oauthfel(400, "invalid_client_metadata", "För stor");
   let m: Record<string, unknown>;
@@ -285,23 +291,45 @@ export async function auktorisera(req: Request, env: Env): Promise<Response> {
   };
   if (val === "avsla") return tillbaka(b.redirect, url.origin, { error: "access_denied", error_description: "Användaren avslog", state: b.state });
 
+  const ip = klientIp(req);
+  const mottagare = async () => (await hämtaInställningar(env.DB)).name;
   let ägare: string | null = null;
   let fel = "";
   if (val === "agare") {
     const lösen = f.get("password");
     if (typeof lösen === "string" && lösen !== "") {
-      if (await rättLösenord(env.ADMIN_PASSWORD, lösen)) ägare = "owner";
-      else fel = "Fel lösenord.";
+      // Samma spärr och rate limit som inloggningen i admin: det är samma lösenord.
+      const kvar = await spärrad(env, ip);
+      if (kvar !== null) {
+        return förMångaSida(await mottagare(), "För många fel lösenord. Inloggningen med lösenord är spärrad en stund; försök igen om en timme.", kvar, SIDHUVUDEN);
+      }
+      if (!(await tillåt(env, "inloggning", ip))) {
+        return förMångaSida(await mottagare(), "För många försök. Vänta en minut och försök igen.", väntetid("inloggning"), SIDHUVUDEN);
+      }
+      if (await rättLösenord(env.ADMIN_PASSWORD, lösen)) {
+        ägare = "owner";
+        await lyckad(env, ip);
+      } else {
+        fel = "Fel lösenord.";
+        await revisionslogg(env, req, "oauth.fel", `Fel adminlösenord vid koppling av ${b.klient.name}`, "okänd");
+        await misslyckad(env, req, ip, "OAuth");
+      }
     } else if (await adminInloggad(req, env)) {
       ägare = "owner";
     } else fel = "Skriv lösenordet.";
   } else if (val === "avsandare") {
     ägare = await identitetFrånInloggning(env, text("inloggning"));
-    if (!ägare) fel = "Länken eller nyckeln fungerar inte.";
+    if (!ägare) {
+      if (!(await tillåt(env, "gissning", ip))) {
+        return förMångaSida(await mottagare(), "För många försök med en länk eller nyckel som inte fungerar. Vänta en minut.", väntetid("gissning"), SIDHUVUDEN);
+      }
+      fel = "Länken eller nyckeln fungerar inte.";
+    }
   } else {
     fel = "Välj hur du loggar in.";
   }
   if (!ägare) return inloggningssida(req, env, b, kaka, fel, 401);
+  await revisionslogg(env, req, "oauth.godkand", `${b.klient.name} (${b.redirect})`, ägare === "owner" ? "ägaren" : `avsändare:${ägare}`);
 
   const kod = slumptoken(32);
   await env.DB.batch([
@@ -336,8 +364,8 @@ async function identitetFrånInloggning(env: Env, text: string): Promise<string 
     }
   }
   if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
-  const rad = await env.DB.prepare("SELECT id FROM senders WHERE page_token = ? AND key_hash IS NOT NULL").bind(token).first<{ id: string }>();
-  return rad?.id ?? null;
+  const rad = await avsändareFrånSidtoken(env.DB, token);
+  return rad?.key_hash ? rad.id : null;
 }
 
 async function inloggningssida(
@@ -410,6 +438,7 @@ async function inloggningssida(
     ),
     status,
     { ...SIDHUVUDEN, ...huvuden },
+    { formAction: false },
   );
 }
 
@@ -461,6 +490,7 @@ const tokensvar = (t: { access: string; refresh: string }) =>
   });
 
 export async function token(req: Request, env: Env): Promise<Response> {
+  if (!(await tillåt(env, "token", klientIp(req)))) return förMånga("token");
   const p = await läsKropp(req);
   const klient = klientId(req, p);
   const typ = p.get("grant_type");
@@ -485,12 +515,13 @@ export async function token(req: Request, env: Env): Promise<Response> {
     if (!k) return oauthfel(400, "invalid_grant", "Klienten finns inte längre");
     const t = nyaTokens();
     const tid = nu();
+    const grantId = slumptoken(9);
     await env.DB.prepare(
       `INSERT INTO oauth_grants (id, client_id, client_name, owner, access_hash, access_expires_at, refresh_hash, refreshed_at,
          refresh_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
-        slumptoken(9),
+        grantId,
         rad.client_id,
         k.name,
         rad.owner,
@@ -502,6 +533,7 @@ export async function token(req: Request, env: Env): Promise<Response> {
         tid,
       )
       .run();
+    await revisionslogg(env, req, "oauth.skapad", `${k.name} (${grantId})`, rad.owner === "owner" ? "ägaren" : `avsändare:${rad.owner}`);
     return tokensvar(t);
   }
 
@@ -550,12 +582,13 @@ export async function återkallaToken(req: Request, env: Env): Promise<Response>
   const p = await läsKropp(req);
   const t = p.get("token");
   if (t) {
-    await env.DB.prepare(
+    const g = await env.DB.prepare(
       `UPDATE oauth_grants SET revoked_at = ?, access_hash = NULL, refresh_hash = NULL, prev_refresh_hash = NULL
-       WHERE (access_hash = ?2 OR refresh_hash = ?2) AND revoked_at IS NULL`,
+       WHERE (access_hash = ?2 OR refresh_hash = ?2) AND revoked_at IS NULL RETURNING id, client_name, owner`,
     )
       .bind(nu(), await sha256Hex(t))
-      .run();
+      .first<{ id: string; client_name: string; owner: string }>();
+    if (g) await revisionslogg(env, req, "oauth.aterkallad", `${g.client_name} (${g.id}) av klienten`, g.owner === "owner" ? "ägaren" : `avsändare:${g.owner}`);
   }
   return new Response(null, { status: 200, headers: CORS });
 }

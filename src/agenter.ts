@@ -72,20 +72,56 @@ export async function agentFrånAnrop(req: Request, env: Env, ctx: ExecutionCont
   return rad.owner === "owner" ? { ägare: true, nyckel: rad.id } : { ägare: false, avsändare: rad.owner, nyckel: rad.id };
 }
 
-/** Avsändarens token till den personliga sidan; skapas om den saknas. */
-export async function sidtoken(db: D1Database, avsändare: string): Promise<string | null> {
-  const rad = await db.prepare("SELECT page_token FROM senders WHERE id = ?").bind(avsändare).first<{ page_token: string | null }>();
-  if (!rad) return null;
-  if (rad.page_token) return rad.page_token;
-  const token = slumptoken(24);
-  await db.prepare("UPDATE senders SET page_token = ? WHERE id = ? AND page_token IS NULL").bind(token, avsändare).run();
-  return (await db.prepare("SELECT page_token FROM senders WHERE id = ?").bind(avsändare).first<{ page_token: string }>())!.page_token;
-}
+// ---------- Länken till den personliga sidan (/min/<token>) ----------
+// Sparas bara som SHA-256 (page_hash), som nycklarna, och visas en gång när den skapas. Länkar från före
+// migration 0005 låg i klartext i page_token; de hashas när de används, när ägaren öppnar Avsändare och av
+// städningen, och fortsätter att fungera.
 
+/** En ny länk (den gamla slutar gälla). Token i klartext, eller null om avsändaren inte finns. */
 export async function bytSidtoken(db: D1Database, avsändare: string): Promise<string | null> {
   const token = slumptoken(24);
-  const r = await db.prepare("UPDATE senders SET page_token = ? WHERE id = ?").bind(token, avsändare).run();
+  const r = await db
+    .prepare("UPDATE senders SET page_hash = ?, page_token = NULL, page_created_at = ? WHERE id = ?")
+    .bind(await sha256Hex(token), nu(), avsändare)
+    .run();
   return r.meta.changes ? token : null;
+}
+
+export interface Sidägare {
+  id: string;
+  name: string;
+  key_hash: string | null;
+}
+
+/** Avsändaren som länken hör till (också spärrade; anroparen kontrollerar key_hash). */
+export async function avsändareFrånSidtoken(db: D1Database, token: string): Promise<Sidägare | null> {
+  if (!token || token.length > 128) return null;
+  const hash = await sha256Hex(token);
+  const rad = await db
+    .prepare("SELECT id, name, key_hash, page_token FROM senders WHERE page_hash = ?1 OR page_token = ?2")
+    .bind(hash, token)
+    .first<Sidägare & { page_token: string | null }>();
+  if (!rad) return null;
+  if (rad.page_token) {
+    await db.prepare("UPDATE senders SET page_hash = ?, page_token = NULL WHERE id = ? AND page_token = ?").bind(hash, rad.id, token).run();
+  }
+  return { id: rad.id, name: rad.name, key_hash: rad.key_hash };
+}
+
+/** Engångsmigreringen: hashar länkar som fortfarande ligger i klartext. Antal hashade. */
+export async function hashaGamlaSidtokens(db: D1Database): Promise<number> {
+  const { results } = await db.prepare("SELECT id, page_token FROM senders WHERE page_token IS NOT NULL").all<{ id: string; page_token: string }>();
+  if (!results.length) return 0;
+  await db.batch(
+    await Promise.all(
+      results.map(async (r) =>
+        db
+          .prepare("UPDATE senders SET page_hash = ?, page_token = NULL WHERE id = ? AND page_token = ?")
+          .bind(await sha256Hex(r.page_token), r.id, r.page_token),
+      ),
+    ),
+  );
+  return results.length;
 }
 
 /** Instruktionerna för att koppla en agent (samma på ägarens och avsändarens sidor). */

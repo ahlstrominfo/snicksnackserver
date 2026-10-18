@@ -10,7 +10,10 @@ import { oauthFrånAnrop, obehörig } from "./oauth";
 import { transkriptText, talarnamn, type Transkript } from "./ai/transkript";
 import { hämtaInställningar } from "./db";
 import { signera, verifiera } from "./krypto";
+import { FILHUVUDEN } from "./html";
 import { fel, json } from "./protokoll";
+import { klientIp, tillåt, väntetid } from "./ratelimit";
+import { revisionslogg } from "./revision";
 import { ftsFråga } from "./sok";
 
 const LJUDLÄNK_SEKUNDER = 3600;
@@ -26,7 +29,11 @@ export async function mcp(req: Request, env: Env, ctx: ExecutionContext): Promis
     : harToken
       ? await oauthFrånAnrop(req, env, ctx)
       : null;
-  if (!omfång) return obehörig(req, harToken);
+  if (!omfång) {
+    if (harToken && !(await tillåt(env, "gissning", klientIp(req)))) return mcpFörMånga("För många försök med ogiltig nyckel. Vänta en minut.");
+    return obehörig(req, harToken);
+  }
+  if (!(await tillåt(env, "mcp", omfång.nyckel))) return mcpFörMånga("För många anrop. Vänta en minut och försök igen.");
   if (req.method === "GET" || req.method === "DELETE") {
     return new Response("Snicksnack MCP: POST JSON-RPC hit.\n", {
       status: 405,
@@ -43,10 +50,20 @@ export async function mcp(req: Request, env: Env, ctx: ExecutionContext): Promis
         "Använd list_snacks eller search för att hitta dem och get_snack för att läsa ett. Ett snack pekas ut med target, sender och id.",
     },
   );
-  registreraVerktyg(server, env, omfång, new URL(req.url).origin);
+  registreraVerktyg(server, env, omfång, new URL(req.url).origin, req);
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   return transport.handleRequest(req);
+}
+
+/** 429 som JSON-RPC-fel med Retry-After. */
+function mcpFörMånga(text: string): Response {
+  return json({ jsonrpc: "2.0", error: { code: -32029, message: text }, id: null }, 429, { "Retry-After": String(väntetid("mcp")) });
+}
+
+/** Vem anropet kommer från, för revisionsloggen. */
+export function aktörFör(o: Omfång): string {
+  return o.klient ? `oauth:${o.nyckel}` : `agent:${o.nyckel}`;
 }
 
 // ---------- Verktygen ----------
@@ -79,7 +96,7 @@ const ref = {
   id: z.string().describe("The snack id."),
 };
 
-function registreraVerktyg(server: McpServer, env: Env, o: Omfång, origin: string) {
+function registreraVerktyg(server: McpServer, env: Env, o: Omfång, origin: string, req: Request) {
   const db = env.DB;
 
   server.registerTool(
@@ -285,6 +302,7 @@ function registreraVerktyg(server: McpServer, env: Env, o: Omfång, origin: stri
       if (!ljud) return felsvar("Snacket har inget ljud på servern.");
       const utgår = Math.floor(Date.now() / 1000) + LJUDLÄNK_SEKUNDER;
       const token = await signera(env.KEY_SECRET, `${utgår}\n${ljud.key}`);
+      await revisionslogg(env, req, "ljudlank.skapad", `${prefix.slice(0, -1)}${o.klient ? ` till ${o.klient}` : ""}, gäller en timme`, aktörFör(o));
       return svar({
         url: `${origin}/ljud/${token}`,
         expires_at: new Date(utgår * 1000).toISOString(),
@@ -347,7 +365,7 @@ export async function ljud(req: Request, env: Env, token: string): Promise<Respo
   if (Number(m[1]) < Date.now() / 1000) return fel(410, "Länken har gått ut");
   const obj = await env.FILER.get(m[2], { range: req.headers, onlyIf: req.headers });
   if (!obj) return fel(404, "Ljudet finns inte längre");
-  const huvuden = new Headers({ "Cache-Control": "private, max-age=3600", ETag: obj.httpEtag, "Accept-Ranges": "bytes" });
+  const huvuden = new Headers({ "Cache-Control": "private, max-age=3600", ETag: obj.httpEtag, "Accept-Ranges": "bytes", ...FILHUVUDEN });
   obj.writeHttpMetadata(huvuden);
   if (!("body" in obj)) return new Response(null, { status: 304, headers: huvuden });
   const r = obj.range as { offset?: number; length?: number } | undefined;

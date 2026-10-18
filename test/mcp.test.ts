@@ -43,7 +43,7 @@ beforeAll(async () => {
     ],
     summaries: [{ kind: "decisions", created_at: "2026-10-10T10:00:00+02:00", items: [{ section: "Beslut", text: "Taxan höjs.", speaker: 1, at: 2.0 }] }],
   };
-  await skicka("kunder", anna, paket(a1, { text: "# Styrgrupp", ljud: new Uint8Array([1, 2, 3, 4, 5, 6]) }), "A1");
+  await skicka("kunder", anna, paket(a1, { text: "# Styrgrupp", ljud: new Uint8Array([1, 2, 3, 4, 0x66, 0x74, 0x79, 0x70, 5, 6]) }), "A1");
   await skicka("inbox", anna, paket({ ...transkript("A2", "Promenadtanke"), recorded_at: "2026-10-12T08:00:00+02:00", tags: ["ide"], text: "En idé om cyklar." }), "A2");
   await skicka("inbox", bosse, paket({ ...transkript("B1", "Bosses hemliga möte"), recorded_at: "2026-10-11T08:00:00+02:00", text: "Hemligt om taxan." }), "B1");
   ägarnyckel = await skapaAgentnyckel(env.DB, "owner", "Testägare");
@@ -157,7 +157,7 @@ describe("MCP", () => {
     const väg = new URL(data.url).pathname;
     const hel = await anropa(väg);
     expect(hel.status).toBe(200);
-    expect(new Uint8Array(await hel.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+    expect(new Uint8Array(await hel.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4, 0x66, 0x74, 0x79, 0x70, 5, 6]));
     const del = await anropa(väg, { headers: { Range: "bytes=2-3" } });
     expect(del.status).toBe(206);
     expect(new Uint8Array(await del.arrayBuffer())).toEqual(new Uint8Array([3, 4]));
@@ -175,8 +175,8 @@ describe("MCP", () => {
 describe("personliga sidan", () => {
   it("kräver rätt token; skapar och spärrar agentnycklar", async () => {
     expect((await anropa("/min/fel-token")).status).toBe(404);
-    const { sidtoken } = await import("../src/agenter");
-    const token = (await sidtoken(env.DB, "anna"))!;
+    const { bytSidtoken } = await import("../src/agenter");
+    const token = (await bytSidtoken(env.DB, "anna"))!;
     expect(token.length).toBeGreaterThan(30);
     const sida = await anropa(`/min/${token}`);
     expect(sida.status).toBe(200);
@@ -200,7 +200,7 @@ describe("personliga sidan", () => {
     expect((await verktyg(nyckel, "list_snacks")).data.snacks.map((s: any) => s.id)).toEqual(["A2", "A1"]);
 
     // Bosses sida kan inte spärra Annas nyckel
-    const bossesToken = (await sidtoken(env.DB, "bosse"))!;
+    const bossesToken = (await bytSidtoken(env.DB, "bosse"))!;
     await anropa(`/min/${bossesToken}/agenter/${rad.id}/sparra`, { method: "POST", headers: { Origin: BAS } });
     expect((await rpc(nyckel, "tools/list")).status).toBe(200);
     const sp = await anropa(`/min/${token}/agenter/${rad.id}/sparra`, { method: "POST", headers: { Origin: BAS } });

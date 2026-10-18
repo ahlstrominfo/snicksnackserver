@@ -1,8 +1,11 @@
 // Avsändarens personliga sida /min/<token>: agentnycklar för MCP, inloggade OAuth-klienter och hur man kopplar en agent.
 // Länken är inloggningen; den syns för ägaren under Avsändare och kan bytas där.
 
-import { agentnycklar, mcpKommandon, skapaAgentnyckel, spärraAgentnyckel } from "./agenter";
+import { agentnycklar, avsändareFrånSidtoken, mcpKommandon, skapaAgentnyckel, spärraAgentnyckel } from "./agenter";
 import { hämtaInställningar } from "./db";
+import { förbrukning, kvoterFör, kvottext } from "./kvoter";
+import { klientIp, tillåt, väntetid } from "./ratelimit";
+import { revisionslogg } from "./revision";
 import { inloggningar, återkallaInloggning, type Inloggning } from "./oauth";
 import { html, htmlSvar, raw, type Raw } from "./html";
 import { FAVICON, fältrad, logga, rubrik, SKRIPT, STIL, tomt } from "./utseende";
@@ -29,6 +32,15 @@ export function enkelSida(mottagare: string, titel: string, innehåll: Raw): Raw
       <script>${raw(SKRIPT)}</script>
     </body>
   </html>`;
+}
+
+/** 429 som sida, med Retry-After. */
+export function förMångaSida(mottagare: string, text: string, sekunder: number, huvuden: Record<string, string> = {}): Response {
+  return htmlSvar(
+    enkelSida(mottagare, "Vänta lite", html`<div class="lugn">${rubrik("Vänta lite")}<p class="fel">${text}</p></div>`),
+    429,
+    { "Retry-After": String(sekunder), ...huvuden },
+  );
 }
 
 const tid = (iso: string | null) =>
@@ -63,26 +75,23 @@ export function inloggningslista(lista: Inloggning[], åtgärd: (id: string) => 
         <div class="radtopp"><span class="namn">${g.client_name}</span></div>
         <div class="meta">${v ? html`${v} · ` : ""}inloggad ${tid(g.created_at)} · senast använd ${tid(g.last_used_at)}</div>
       </div>
-      <form method="post" action="${åtgärd(g.id)}" onsubmit="return confirm('Återkalla inloggningen? Klienten slutar fungera direkt.')">
+      <form method="post" action="${åtgärd(g.id)}" data-bekrafta="Återkalla inloggningen? Klienten slutar fungera direkt.">
         <button class="farlig liten">Återkalla</button></form>
     </div>`;
   })}</div>`;
 }
 
-interface Avsändarrad {
-  id: string;
-  name: string;
-  key_hash: string | null;
-}
+type Avsändarrad = NonNullable<Awaited<ReturnType<typeof avsändareFrånSidtoken>>>;
 
 export async function minSida(req: Request, env: Env, delar: string[]): Promise<Response> {
   const url = new URL(req.url);
   const [token, ...rest] = delar;
   const s = await hämtaInställningar(env.DB);
-  const avs = token
-    ? await env.DB.prepare("SELECT id, name, key_hash FROM senders WHERE page_token = ?").bind(token).first<Avsändarrad>()
-    : null;
+  const avs = token ? await avsändareFrånSidtoken(env.DB, token) : null;
   if (!avs || !avs.key_hash) {
+    if (!(await tillåt(env, "gissning", klientIp(req)))) {
+      return förMångaSida(s.name, "För många försök med en länk som inte fungerar. Vänta en minut.", väntetid("gissning"), HUVUDEN);
+    }
     return htmlSvar(
       enkelSida(s.name, "Finns inte", html`<div class="lugn">${rubrik("Länken fungerar inte")}${tomt("Be den som driver mottagaren om en ny länk.")}</div>`),
       404,
@@ -98,10 +107,12 @@ export async function minSida(req: Request, env: Env, delar: string[]): Promise<
       const f = await req.formData().catch(() => new FormData());
       const namn = String(f.get("name") ?? "").trim() || "Agent";
       const nyckel = await skapaAgentnyckel(env.DB, avs.id, namn);
+      await revisionslogg(env, req, "agentnyckel.skapad", `${namn} för ${avs.name}`, `avsändare:${avs.id}`);
       return visa(env, s.name, avs, url, bas, { namn, nyckel });
     }
     if (rest.length === 3 && rest[0] === "klienter" && rest[2] === "aterkalla") {
       const ok = await återkallaInloggning(env.DB, rest[1], avs.id);
+      if (ok) await revisionslogg(env, req, "oauth.aterkallad", `Inloggning ${rest[1]} för ${avs.name}`, `avsändare:${avs.id}`);
       return new Response(null, {
         status: 303,
         headers: { Location: `${bas}?meddelande=${encodeURIComponent(ok ? "Inloggningen är återkallad." : "Inloggningen fanns inte.")}`, ...HUVUDEN },
@@ -109,6 +120,7 @@ export async function minSida(req: Request, env: Env, delar: string[]): Promise<
     }
     if (rest.length === 3 && rest[0] === "agenter" && rest[2] === "sparra") {
       const ok = await spärraAgentnyckel(env.DB, rest[1], avs.id);
+      if (ok) await revisionslogg(env, req, "agentnyckel.sparrad", `Nyckel ${rest[1]} för ${avs.name}`, `avsändare:${avs.id}`);
       return new Response(null, {
         status: 303,
         headers: { Location: `${bas}?meddelande=${encodeURIComponent(ok ? "Nyckeln är spärrad." : "Nyckeln fanns inte.")}`, ...HUVUDEN },
@@ -128,10 +140,12 @@ async function visa(
   bas: string,
   ny: { namn: string; nyckel: string } | null,
 ): Promise<Response> {
-  const [nycklar, antal, klienter] = await Promise.all([
+  const [nycklar, antal, klienter, kvoter, förbrukat] = await Promise.all([
     agentnycklar(env.DB, avs.id),
     env.DB.prepare("SELECT COUNT(*) AS n FROM snacks WHERE sender_id = ?").bind(avs.id).first<{ n: number }>(),
     inloggningar(env.DB, avs.id),
+    hämtaInställningar(env.DB).then((s) => kvoterFör(env.DB, avs.id, s)),
+    förbrukning(env.DB, avs.id),
   ]);
   const n = antal?.n ?? 0;
   const besked = url.searchParams.get("meddelande");
@@ -142,6 +156,7 @@ async function visa(
       avs.name,
       html`${rubrik(avs.name, n === 0 ? `Inga snack skickade till ${mottagare} än.` : n === 1 ? `Ett snack skickat till ${mottagare}.` : `${n} snack skickade till ${mottagare}.`)}
         <p class="fel" style="font-weight:600">Den här länken är din inloggning, dela den inte.</p>
+        <p class="dim" style="margin:0 6px 14px">Förbrukning: ${kvottext(kvoter, förbrukat)}.</p>
         ${besked && !ny ? html`<p class="meddelande">${besked}</p>` : ""}
         ${ny
           ? html`<p class="meddelande">Nyckeln för ${ny.namn} visas bara nu. Kopiera kommandot nedan.</p>
@@ -164,7 +179,7 @@ async function visa(
                 ${k.revoked_at
                   ? ""
                   : html`<form method="post" action="${bas}/agenter/${encodeURIComponent(k.id)}/sparra"
-                      onsubmit="return confirm('Spärra nyckeln? Agenten slutar fungera direkt.')"><button class="farlig liten">Spärra</button></form>`}
+                      data-bekrafta="Spärra nyckeln? Agenten slutar fungera direkt."><button class="farlig liten">Spärra</button></form>`}
               </div>`,
             )}</div>`
           : tomt("Inga agentnycklar än.")}

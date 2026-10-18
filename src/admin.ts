@@ -7,6 +7,7 @@ import {
   MÅL_ID,
   allaAvsändare,
   allaMål,
+  heltal,
   hämtaInställningar,
   nu,
   slug,
@@ -16,13 +17,17 @@ import {
   type Mål,
   type SnackRad,
 } from "./db";
-import { html, htmlSvar, raw, type Raw } from "./html";
+import { FILHUVUDEN, html, htmlSvar, raw, type Raw } from "./html";
 import { giltigSession, läsCookie, nyNyckel, rättLösenord, sha256Hex, skapaSession, SESSION_DAGAR } from "./krypto";
 import { IKON_NYCKEL, ikonversion } from "./protokoll";
 import { adminAi, allaPrompter, promptVal, sättPrompterFörAvsändare } from "./admin-ai";
 import { tabortUrIndex } from "./sok";
 import { adminAgenter } from "./admin-agenter";
-import { bytSidtoken, sidtoken } from "./agenter";
+import { bytSidtoken, hashaGamlaSidtokens } from "./agenter";
+import { allFörbrukning, kvottext, megabyte, tal, totalaTokens } from "./kvoter";
+import { klientIp, tillåt, väntetid } from "./ratelimit";
+import { HÄNDELSER, revisionslogg, senasteLogg, SPARA_DAGAR } from "./revision";
+import { lyckad, misslyckad, spärrad } from "./sparr";
 import { FAVICON, fältrad, logga, rubrik, SKRIPT, STIL, tomt, valgrupp, växel } from "./utseende";
 
 const COOKIE = "snicksnack_admin";
@@ -92,7 +97,7 @@ export async function admin(req: Request, env: Env): Promise<Response> {
       case "snack":
         if (delar.length === 1 && !post) return await snackLista(env, s, url);
         if (delar.length === 4 && !post) return await snackSida(env, s, delar[1], delar[2], delar[3], url);
-        if (delar.length === 5 && delar[4] === "ta-bort" && post) return await taBortSnack(env, delar[1], delar[2], delar[3]);
+        if (delar.length === 5 && delar[4] === "ta-bort" && post) return await taBortSnack(req, env, delar[1], delar[2], delar[3]);
         break;
       case "fil":
         if (delar.length === 5 && !post) return await fil(req, env, delar[1], delar[2], delar[3], delar[4], url);
@@ -104,15 +109,12 @@ export async function admin(req: Request, env: Env): Promise<Response> {
         break;
       case "avsandare":
         if (delar.length === 1) return await (post ? skapaAvsändare(req, env, s, url) : avsändarSida(env, s, url));
-        if (delar.length === 2 && post) return await ändraAvsändare(req, env, delar[1]);
+        if (delar.length === 2 && post) return await ändraAvsändare(req, env, s, delar[1]);
         if (delar.length === 3 && post) {
-          if (delar[2] === "sparra") return await spärra(env, delar[1]);
-          if (delar[2] === "ny-nyckel") return await bytNyckel(env, s, delar[1], url);
-          if (delar[2] === "ta-bort") return await taBortAvsändare(env, delar[1]);
-          if (delar[2] === "ny-sida") {
-            if (!(await bytSidtoken(env.DB, delar[1]))) throw new EjFunnen();
-            return medMeddelande("/admin/avsandare", "Länken till den personliga sidan är bytt. Den gamla fungerar inte längre.");
-          }
+          if (delar[2] === "sparra") return await spärra(req, env, delar[1]);
+          if (delar[2] === "ny-nyckel") return await bytNyckel(req, env, s, delar[1], url);
+          if (delar[2] === "ta-bort") return await taBortAvsändare(req, env, delar[1]);
+          if (delar[2] === "ny-sida") return await nySida(req, env, s, delar[1], url);
         }
         break;
       case "prompter":
@@ -128,6 +130,9 @@ export async function admin(req: Request, env: Env): Promise<Response> {
       }
       case "installningar":
         if (delar.length === 1) return await (post ? sparaInställningar(req, env, s) : inställningsSida(env, s, url));
+        break;
+      case "logg":
+        if (delar.length === 1 && !post) return await loggSida(env, s, url);
         break;
     }
   } catch (e) {
@@ -252,7 +257,10 @@ export function sida(s: Inställningar | null, titel: string, innehåll: Raw, ak
                 ${länk("/admin/snack", "Snack")}${länk("/admin/mal", "Mål")}${länk("/admin/avsandare", "Avsändare")}${länk(
                   "/admin/prompter",
                   "Prompter",
-                )}${länk("/admin/leverantorer", "Leverantörer")}${länk("/admin/agenter", "Agenter")}${länk("/admin/installningar", "Inställningar")}
+                )}${länk("/admin/leverantorer", "Leverantörer")}${länk("/admin/agenter", "Agenter")}${länk("/admin/installningar", "Inställningar")}${länk(
+                  "/admin/logg",
+                  "Logg",
+                )}
               </nav>`
             : ""}
         </div>
@@ -285,7 +293,7 @@ function säkerNästa(url: URL): string {
   return n.startsWith("/admin") && !n.startsWith("//") ? n : "/admin/snack";
 }
 
-function loginSida(url: URL, fel: string | null = null, status = 200): Response {
+function loginSida(url: URL, fel: string | null = null, status = 200, huvuden: Record<string, string> = {}): Response {
   return htmlSvar(
     sida(
       null,
@@ -300,12 +308,28 @@ function loginSida(url: URL, fel: string | null = null, status = 200): Response 
       </div>`,
     ),
     status,
+    huvuden,
   );
 }
 
 async function loggaIn(req: Request, env: Env, url: URL): Promise<Response> {
+  const ip = klientIp(req);
+  // Spärren i D1 (efter många fel, gäller överallt) och rate limit per plats (ratelimit.ts).
+  const kvar = await spärrad(env, ip);
+  if (kvar !== null) {
+    return loginSida(url, "För många fel lösenord. Inloggningen är spärrad en stund; försök igen om en timme.", 429, { "Retry-After": String(kvar) });
+  }
+  if (!(await tillåt(env, "inloggning", ip))) {
+    return loginSida(url, "För många försök. Vänta en minut och försök igen.", 429, { "Retry-After": String(väntetid("inloggning")) });
+  }
   const f = await formulär(req);
-  if (!(await rättLösenord(env.ADMIN_PASSWORD, fält(f, "password")))) return loginSida(url, "Fel lösenord.", 401);
+  if (!(await rättLösenord(env.ADMIN_PASSWORD, fält(f, "password")))) {
+    await revisionslogg(env, req, "inloggning.fel", "", "okänd");
+    await misslyckad(env, req, ip, "admin");
+    return loginSida(url, "Fel lösenord.", 401);
+  }
+  await lyckad(env, ip);
+  await revisionslogg(env, req, "inloggning.ok");
   const värde = await skapaSession(env.ADMIN_PASSWORD);
   return omdirigera(säkerNästa(url), { "Set-Cookie": cookie(url, värde, SESSION_DAGAR * 86400) });
 }
@@ -582,7 +606,7 @@ async function snackSida(env: Env, s: Inställningar, t: string, a: string, id: 
           </dl>
         </div>
         <form method="post" action="/admin/snack${vägTill(t, a, id)}/ta-bort" class="knappar"
-          onsubmit="return confirm('Ta bort snacket och dess filer?')">
+          data-bekrafta="Ta bort snacket och dess filer?">
           <button class="farlig">Ta bort snacket</button>
         </form>`,
       "/admin/snack",
@@ -590,13 +614,14 @@ async function snackSida(env: Env, s: Inställningar, t: string, a: string, id: 
   );
 }
 
-async function taBortSnack(env: Env, t: string, a: string, id: string): Promise<Response> {
-  await hämtaSnack(env, t, a, id);
+async function taBortSnack(req: Request, env: Env, t: string, a: string, id: string): Promise<Response> {
+  const r = await hämtaSnack(env, t, a, id);
   const prefix = `${t}/${a}/${id}/`;
   const lista = await env.FILER.list({ prefix });
   if (lista.objects.length) await env.FILER.delete(lista.objects.map((o) => o.key));
   await env.DB.prepare("DELETE FROM snacks WHERE target_id = ? AND sender_id = ? AND snack_id = ?").bind(t, a, id).run();
   await tabortUrIndex(env.DB, { target: t, sender: a, id });
+  await revisionslogg(env, req, "snack.raderat", `${r.title || id} (${t}/${a}/${id})`);
   return medMeddelande("/admin/snack", "Snacket är borttaget.");
 }
 
@@ -606,7 +631,7 @@ async function fil(req: Request, env: Env, t: string, a: string, id: string, nam
   // Range behövs för att ljudspelaren i Safari ska kunna spela upp.
   const obj = await env.FILER.get(nyckel, { range: req.headers, onlyIf: req.headers });
   if (!obj) throw new EjFunnen();
-  const huvuden = new Headers({ "Cache-Control": "private, no-cache", ETag: obj.httpEtag, "Accept-Ranges": "bytes" });
+  const huvuden = new Headers({ "Cache-Control": "private, no-cache", ETag: obj.httpEtag, "Accept-Ranges": "bytes", ...FILHUVUDEN });
   obj.writeHttpMetadata(huvuden);
   if (url.searchParams.has("ladda")) {
     huvuden.set("Content-Disposition", `attachment; filename="${id}-${namn}"`);
@@ -653,7 +678,7 @@ async function målSida(env: Env, s: Inställningar, url: URL, fel: string | nul
                   </summary>
                   <div class="postinnehall">
                     <form id="ta-bort-mal-${i}" method="post" action="/admin/mal/${encodeURIComponent(m.id)}/ta-bort"
-                      onsubmit="return confirm('Ta bort målet? Mottagna snack ligger kvar.')"></form>
+                      data-bekrafta="Ta bort målet? Mottagna snack ligger kvar."></form>
                     <form method="post" action="/admin/mal/${encodeURIComponent(m.id)}">
                       ${fältrad("Namn", html`<input type="text" name="name" value="${m.name}" required />`)}
                       ${fältrad("Grupp", html`<input type="text" name="group" value="${m.grp ?? ""}" placeholder="Ingen grupp" />`)}
@@ -733,17 +758,54 @@ function målVal(mål: Mål[], valda: string[]): Raw {
   )}`;
 }
 
+interface Avsändartillägg {
+  id: string;
+  har_sida: number;
+  page_created_at: string | null;
+  quota_ai_requests_day: number | null;
+  quota_ai_tokens_30d: number | null;
+  quota_storage_mb: number | null;
+}
+
+/** Fälten för kvoterna; tomt = standarden under Inställningar. */
+function kvotfält(s: Inställningar, a: Avsändartillägg | null): Raw {
+  const std = (v: number | null, enhet: string) => (v === null ? "Standard: obegränsat" : `Standard: ${tal(v)} ${enhet}`);
+  const f = (namn: string, etikett: string, värde: number | null, standard: number | null, enhet: string) =>
+    fältrad(etikett, html`<input type="text" inputmode="numeric" pattern="[0-9 ]*" name="${namn}" value="${värde ?? ""}" placeholder="${std(standard, enhet)}" />`);
+  return html`<fieldset class="falt">
+    <legend class="etikett">Kvoter</legend>
+    ${f("quota_ai_requests_day", "AI-anrop per dygn", a?.quota_ai_requests_day ?? null, s.kvoter.aiAnropDag, "anrop")}
+    ${f("quota_ai_tokens_30d", "AI-tokens per 30 dagar", a?.quota_ai_tokens_30d ?? null, s.kvoter.aiTokens30, "tokens")}
+    ${f("quota_storage_mb", "Lagring i MB", a?.quota_storage_mb ?? null, s.kvoter.lagringMB, "MB")}
+    <span class="tips">Tomt = standarden under <a href="/admin/installningar">Inställningar</a>. 0 stänger av.</span>
+  </fieldset>`;
+}
+
 async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string | null = null, status = 200): Promise<Response> {
-  const [avsändare, mål, prompter, tilldelade] = await Promise.all([
+  // Länkar från före hashningen (migration 0005) hashas nu; de fungerar men visas inte längre.
+  await hashaGamlaSidtokens(env.DB);
+  const [avsändare, mål, prompter, tilldelade, tillägg, förbrukat] = await Promise.all([
     allaAvsändare(env.DB),
     allaMål(env.DB),
     allaPrompter(env.DB),
     env.DB.prepare("SELECT sender_id, prompt_id FROM sender_prompts").all<{ sender_id: string; prompt_id: string }>(),
+    env.DB.prepare(
+      `SELECT id, page_hash IS NOT NULL AS har_sida, page_created_at, quota_ai_requests_day, quota_ai_tokens_30d, quota_storage_mb
+       FROM senders`,
+    ).all<Avsändartillägg>(),
+    allFörbrukning(env.DB),
   ]);
   const prompterFör = (id: string) => tilldelade.results.filter((r) => r.sender_id === id).map((r) => r.prompt_id);
-  // Länken till varje avsändares personliga sida (agentnycklar för MCP); skapas här om den saknas.
-  const sidor = new Map(await Promise.all(avsändare.map(async (a) => [a.id, await sidtoken(env.DB, a.id)] as const)));
-  const sidlänk = (id: string) => `${url.origin}/min/${encodeURIComponent(sidor.get(id) ?? "")}`;
+  const extra = new Map(tillägg.results.map((r) => [r.id, r]));
+  const kvoter = (id: string) => {
+    const e = extra.get(id);
+    return {
+      aiAnropDag: e?.quota_ai_requests_day ?? s.kvoter.aiAnropDag,
+      aiTokens30: e?.quota_ai_tokens_30d ?? s.kvoter.aiTokens30,
+      lagringMB: e?.quota_storage_mb ?? s.kvoter.lagringMB,
+    };
+  };
+  const förbrukning = (id: string) => förbrukat.get(id) ?? { anropIdag: 0, tokens30: 0, bytes: 0 };
   return htmlSvar(
     sida(
       s,
@@ -752,8 +814,9 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
         ${meddelande(url)} ${felruta(fel)}
         ${avsändare.length
           ? html`<div class="lista">
-              ${avsändare.map(
-                (a, i) => html`<details class="post">
+              ${avsändare.map((a, i) => {
+                const e = extra.get(a.id) ?? null;
+                return html`<details class="post">
                   <summary>
                     <div class="radtext">
                       <div class="namn">${a.name}</div>
@@ -763,27 +826,36 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
                   </summary>
                   <div class="postinnehall">
                     <form id="nyckel-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ny-nyckel"
-                      onsubmit="return confirm('Skapa en ny nyckel? Den gamla slutar fungera.')"></form>
+                      data-bekrafta="Skapa en ny nyckel? Den gamla slutar fungera."></form>
                     ${a.key_hint
                       ? html`<form id="stang-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/sparra"
-                          onsubmit="return confirm('Spärra avsändaren? Nyckeln slutar fungera direkt.')"></form>`
+                          data-bekrafta="Spärra avsändaren? Nyckeln slutar fungera direkt."></form>`
                       : html`<form id="stang-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ta-bort"
-                          onsubmit="return confirm('Ta bort avsändaren? Mottagna snack ligger kvar.')"></form>`}
+                          data-bekrafta="Ta bort avsändaren? Mottagna snack ligger kvar."></form>`}
                     <form id="sida-${i}" method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}/ny-sida"
-                      onsubmit="return confirm('Byta länk? Den gamla slutar fungera.')"></form>
+                      ${raw(e?.har_sida ? 'data-bekrafta="Byta länk? Den gamla slutar fungera."' : "")}></form>
+                    <div class="kort" style="background:var(--falt)">
+                      <span class="etikett">Förbrukning</span>
+                      <p class="tips" style="margin:0">${kvottext(kvoter(a.id), förbrukning(a.id))}</p>
+                    </div>
                     <div class="kort" style="background:var(--falt)">
                       <span class="etikett">Personlig sida</span>
-                      <p class="tips" style="margin:0 0 8px">Där skapar ${a.name} nycklar för sina AI-agenter. Länken är inloggningen.</p>
-                      <code>${sidlänk(a.id)}</code>
+                      <p class="tips" style="margin:0 0 8px">Där skapar ${a.name} nycklar för sina AI-agenter. Länken är inloggningen och
+                        visas bara när den skapas, som nyckeln. Har den tappats bort: byt länk och skicka den nya.</p>
+                      <p class="meta" style="margin:0">${e?.har_sida
+                        ? e.page_created_at
+                          ? `Länken skapades ${tidpunkt(e.page_created_at)}.`
+                          : "Länken skapades innan länkarna började sparas som hash och kan inte visas igen. Den fungerar fortfarande."
+                        : "Ingen länk än."}</p>
                       <div class="knappar" style="margin-top:8px">
-                        <button type="button" class="diskret liten" data-kopiera="${sidlänk(a.id)}">Kopiera länken</button>
-                        <button class="diskret liten" form="sida-${i}">Byt länk</button>
+                        <button class="diskret liten" form="sida-${i}">${e?.har_sida ? "Byt länk" : "Skapa länk"}</button>
                       </div>
                     </div>
                     <form method="post" action="/admin/avsandare/${encodeURIComponent(a.id)}">
                       ${fältrad("Namn", html`<input type="text" name="name" value="${a.name}" required />`)}
                       ${valgrupp("Mål", målVal(mål, a.targets))}
                       ${valgrupp("Prompter", promptVal(prompter, prompterFör(a.id)))}
+                      ${kvotfält(s, e)}
                       <p class="tips">Id <code>${a.id}</code> · skapad ${tidpunkt(a.created_at)} ·
                         <a href="/admin/snack?avsandare=${encodeURIComponent(a.id)}">Visa snacken</a></p>
                       <div class="knappar">
@@ -795,8 +867,8 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
                       </div>
                     </form>
                   </div>
-                </details>`,
-              )}
+                </details>`;
+              })}
             </div>`
           : tomt("Ingen skickar hit än. Lägg till den första nedan.")}
         <details class="lista post ny"${raw(!avsändare.length || fel ? " open" : "")}>
@@ -806,6 +878,7 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
               ${fältrad("Namn", html`<input type="text" name="name" required placeholder="Anna Andersson" />`)}
               ${valgrupp("Mål", målVal(mål, mål.length === 1 ? [mål[0].id] : []))}
               ${valgrupp("Prompter", promptVal(prompter, []), "Extern AI: sammanfattningar och chatt.")}
+              ${kvotfält(s, null)}
               <div class="knappar"><button>Skapa och visa nyckel</button></div>
             </form>
           </div>
@@ -814,6 +887,22 @@ async function avsändarSida(env: Env, s: Inställningar, url: URL, fel: string 
     ),
     status,
   );
+}
+
+/** Kvoterna ur formuläret: tomt = standard (NULL). Ett Response betyder fel. */
+function läsKvoter(f: FormData): [number | null, number | null, number | null] | string {
+  const ut: (number | null)[] = [];
+  for (const [namn, text] of [
+    ["quota_ai_requests_day", "AI-anrop per dygn"],
+    ["quota_ai_tokens_30d", "AI-tokens per 30 dagar"],
+    ["quota_storage_mb", "Lagring"],
+  ]) {
+    const v = fält(f, namn);
+    const n = heltal(v);
+    if (v !== "" && n === null) return `${text} ska vara ett heltal (0 eller mer), eller tomt för standarden.`;
+    ut.push(n);
+  }
+  return ut as [number | null, number | null, number | null];
 }
 
 async function ledigtId(db: D1Database, namn: string): Promise<string> {
@@ -838,36 +927,59 @@ async function skapaAvsändare(req: Request, env: Env, s: Inställningar, url: U
   const f = await formulär(req);
   const namn = fält(f, "name");
   if (!namn) return avsändarSida(env, s, url, "Avsändaren behöver ett namn.", 400);
+  const kv = läsKvoter(f);
+  if (typeof kv === "string") return avsändarSida(env, s, url, kv, 400);
   const id = await ledigtId(env.DB, namn);
   const nyckel = nyNyckel();
-  await env.DB.prepare("INSERT INTO senders (id, name, key_hash, key_hint, created_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(id, namn, await sha256Hex(nyckel), nyckel.slice(-4), nu())
+  await env.DB.prepare(
+    `INSERT INTO senders (id, name, key_hash, key_hint, created_at, quota_ai_requests_day, quota_ai_tokens_30d, quota_storage_mb)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, namn, await sha256Hex(nyckel), nyckel.slice(-4), nu(), ...kv)
     .run();
   await sättMål(env, id, flera(f, "targets"));
   await sättPrompterFörAvsändare(env.DB, id, flera(f, "prompts"));
-  return nyckelSida(s, namn, nyckel, url, await sidtoken(env.DB, id));
+  const sidtoken = await bytSidtoken(env.DB, id);
+  await revisionslogg(env, req, "avsandare.skapad", `${namn} (${id}), nyckel …${nyckel.slice(-4)}`);
+  return nyckelSida(s, namn, nyckel, url, sidtoken);
 }
 
-async function ändraAvsändare(req: Request, env: Env, id: string): Promise<Response> {
+async function ändraAvsändare(req: Request, env: Env, s: Inställningar, id: string): Promise<Response> {
   const f = await formulär(req);
   const namn = fält(f, "name");
   if (!namn) return medMeddelande("/admin/avsandare", "Avsändaren behöver ett namn.");
-  const r = await env.DB.prepare("UPDATE senders SET name = ? WHERE id = ?").bind(namn, id).run();
-  if (!r.meta.changes) throw new EjFunnen();
+  const kv = läsKvoter(f);
+  if (typeof kv === "string") return avsändarSida(env, s, new URL(req.url), kv, 400);
+  const före = await env.DB.prepare("SELECT quota_ai_requests_day AS a, quota_ai_tokens_30d AS t, quota_storage_mb AS l FROM senders WHERE id = ?")
+    .bind(id)
+    .first<{ a: number | null; t: number | null; l: number | null }>();
+  if (!före) throw new EjFunnen();
+  await env.DB.prepare("UPDATE senders SET name = ?, quota_ai_requests_day = ?, quota_ai_tokens_30d = ?, quota_storage_mb = ? WHERE id = ?")
+    .bind(namn, ...kv, id)
+    .run();
   await sättMål(env, id, flera(f, "targets"));
   await sättPrompterFörAvsändare(env.DB, id, flera(f, "prompts"));
+  const visa = (v: number | null) => (v === null ? "standard" : tal(v));
+  const kvoterÄndrade = före.a !== kv[0] || före.t !== kv[1] || före.l !== kv[2];
+  await revisionslogg(
+    env,
+    req,
+    "avsandare.andrad",
+    `${namn} (${id})${kvoterÄndrade ? `, kvoter: ${visa(kv[0])} anrop/dygn, ${visa(kv[1])} tokens/30 d, ${visa(kv[2])} MB` : ""}`,
+  );
   return medMeddelande("/admin/avsandare", `${namn} är sparad.`);
 }
 
-async function spärra(env: Env, id: string): Promise<Response> {
-  const r = await env.DB.prepare("UPDATE senders SET key_hash = NULL, key_hint = NULL, revoked_at = ? WHERE id = ?")
+async function spärra(req: Request, env: Env, id: string): Promise<Response> {
+  const rad = await env.DB.prepare("UPDATE senders SET key_hash = NULL, key_hint = NULL, revoked_at = ? WHERE id = ? RETURNING name")
     .bind(nu(), id)
-    .run();
-  if (!r.meta.changes) throw new EjFunnen();
+    .first<{ name: string }>();
+  if (!rad) throw new EjFunnen();
+  await revisionslogg(env, req, "avsandare.sparrad", `${rad.name} (${id})`);
   return medMeddelande("/admin/avsandare", "Avsändaren är spärrad. Nyckeln fungerar inte längre.");
 }
 
-async function bytNyckel(env: Env, s: Inställningar, id: string, url: URL): Promise<Response> {
+async function bytNyckel(req: Request, env: Env, s: Inställningar, id: string, url: URL): Promise<Response> {
   const nyckel = nyNyckel();
   const rad = await env.DB.prepare(
     "UPDATE senders SET key_hash = ?, key_hint = ?, revoked_at = NULL WHERE id = ? RETURNING name",
@@ -875,15 +987,44 @@ async function bytNyckel(env: Env, s: Inställningar, id: string, url: URL): Pro
     .bind(await sha256Hex(nyckel), nyckel.slice(-4), id)
     .first<{ name: string }>();
   if (!rad) throw new EjFunnen();
-  return nyckelSida(s, rad.name, nyckel, url, await sidtoken(env.DB, id));
+  await revisionslogg(env, req, "avsandare.ny_nyckel", `${rad.name} (${id}), nyckel …${nyckel.slice(-4)}`);
+  return nyckelSida(s, rad.name, nyckel, url, null);
 }
 
-async function taBortAvsändare(env: Env, id: string): Promise<Response> {
-  await env.DB.batch([
+async function taBortAvsändare(req: Request, env: Env, id: string): Promise<Response> {
+  const [, borta] = await env.DB.batch([
     env.DB.prepare("DELETE FROM sender_targets WHERE sender_id = ?").bind(id),
     env.DB.prepare("DELETE FROM senders WHERE id = ? AND key_hash IS NULL").bind(id),
   ]);
+  if (borta.meta.changes) await revisionslogg(env, req, "avsandare.borttagen", id);
   return medMeddelande("/admin/avsandare", "Avsändaren är borttagen. Snacken ligger kvar.");
+}
+
+/** Ny länk till den personliga sidan: visas en gång, som nyckeln. */
+async function nySida(req: Request, env: Env, s: Inställningar, id: string, url: URL): Promise<Response> {
+  const token = await bytSidtoken(env.DB, id);
+  if (!token) throw new EjFunnen();
+  const rad = (await env.DB.prepare("SELECT name FROM senders WHERE id = ?").bind(id).first<{ name: string }>())!;
+  await revisionslogg(env, req, "avsandare.ny_sida", `${rad.name} (${id})`);
+  const länk = `${url.origin}/min/${encodeURIComponent(token)}`;
+  return htmlSvar(
+    sida(
+      s,
+      `Länk för ${rad.name}`,
+      html`<div class="lugn">
+        ${rubrik("Ny länk till personliga sidan", `För ${rad.name}. Den gamla länken fungerar inte längre.`)}
+        <p class="meddelande">Länken visas bara nu. Tappas den bort gör du en ny under Avsändare.</p>
+        <div class="kort">
+          <span class="etikett">Din sida</span>
+          <p class="tips" style="margin:0 0 8px">Ge ${rad.name} länken: där skapas nycklar för AI-agenter. Länken är inloggningen.</p>
+          <code>${länk}</code>
+          <div class="knappar" style="margin-top:8px"><button type="button" class="diskret liten" data-kopiera="${länk}">Kopiera länken</button></div>
+        </div>
+        <div class="knappar"><a class="knapp" href="/admin/avsandare">Klar</a></div>
+      </div>`,
+      "/admin/avsandare",
+    ),
+  );
 }
 
 /** Kopplingslänken som appen läser ur QR-koden (docs/protokoll.md). */
@@ -904,7 +1045,7 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL, s
       html`<div class="lugn">
         ${rubrik("Skanna i Snicksnack", `Nyckeln för ${namn}. Lägg till en mottagare i appen och rikta kameran hit.`)}
         <div class="qr">${raw(qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }))}</div>
-        <p class="meddelande">Koden visas bara nu. Tappas den bort gör du en ny nyckel under Avsändare.</p>
+        <p class="meddelande">Koden${din ? " och länken till personliga sidan" : ""} visas bara nu. Tappas de bort gör du nya under Avsändare.</p>
         <details class="kort inlagt">
           <summary>Skicka länken i stället</summary>
           <dl class="fakta" style="margin-top:8px">
@@ -917,7 +1058,7 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL, s
         ${din
           ? html`<div class="kort">
               <span class="etikett">Din sida</span>
-              <p class="tips" style="margin:0 0 8px">Ge också ${namn} den här länken: där skapas nycklar för AI-agenter. Länken är inloggningen.</p>
+              <p class="tips" style="margin:0 0 8px">Ge också ${namn} den här länken: där skapas nycklar för AI-agenter. Länken är inloggningen och visas bara nu.</p>
               <code>${din}</code>
               <div class="knappar" style="margin-top:8px"><button type="button" class="diskret liten" data-kopiera="${din}">Kopiera länken</button></div>
             </div>`
@@ -932,7 +1073,13 @@ function nyckelSida(s: Inställningar, namn: string, nyckel: string, url: URL, s
 // ---------- Inställningar ----------
 
 async function inställningsSida(env: Env, s: Inställningar, url: URL, fel: string | null = null, status = 200): Promise<Response> {
-  const { results: leverantörer } = await env.DB.prepare("SELECT id, name FROM providers ORDER BY name").all<{ id: string; name: string }>();
+  const [{ results: leverantörer }, tokens] = await Promise.all([
+    env.DB.prepare("SELECT id, name FROM providers ORDER BY name").all<{ id: string; name: string }>(),
+    totalaTokens(env.DB),
+  ]);
+  const tal_ = (n: number | null) => (n === null ? "" : String(n));
+  const sifferfält = (namn: string, värde: number | null, platshållare = "Obegränsat") =>
+    html`<input id="${namn}" type="text" inputmode="numeric" pattern="[0-9 ]*" name="${namn}" value="${tal_(värde)}" placeholder="${platshållare}" />`;
   return htmlSvar(
     sida(
       s,
@@ -988,6 +1135,22 @@ async function inställningsSida(env: Env, s: Inställningar, url: URL, fel: str
               "Gäller också prompter utan egen systemtext.",
             )}
           </div>
+          <h2>Kvoter och AI-budget</h2>
+          <div class="kort">
+            <p class="tips" style="margin:0 2px 16px">Standard för avsändare utan egna kvoter (de ställs in under Avsändare). Tomt = obegränsat.
+              När ett tak nås svarar sammanfattning och chatt 429 med en förklaring som appen visar, och mottagningen nekar
+              snack som inte får plats.</p>
+            ${fältrad("AI-anrop per dygn", sifferfält("quota_ai_requests_day", s.kvoter.aiAnropDag), "Per avsändare. Dygnet räknas i UTC.")}
+            ${fältrad("AI-tokens per 30 dagar", sifferfält("quota_ai_tokens_30d", s.kvoter.aiTokens30), "Per avsändare, in och ut tillsammans.")}
+            ${fältrad("Lagring i MB", sifferfält("quota_storage_mb", s.kvoter.lagringMB), "Per avsändare, alla snack tillsammans. En timme ljud är 60–70 MB.")}
+            ${fältrad(
+              "AI-budget, tokens per 30 dagar",
+              sifferfält("ai_budget_tokens_30d", s.aiBudget, "Ingen"),
+              `För alla avsändare tillsammans; stoppar all AI när den är slut. De senaste 30 dagarna: ${tal(tokens)} tokens${
+                s.aiBudget !== null ? ` av ${tal(s.aiBudget)}` : ""
+              }. Sätt också ett utgiftstak hos AI-leverantören.`,
+            )}
+          </div>
           <div class="knappar"><button>Spara</button></div>
         </form>`,
       "/admin/installningar",
@@ -1014,6 +1177,19 @@ async function sparaInställningar(req: Request, env: Env, s: Inställningar): P
   if (!f.has("no_color") && !/^#[0-9A-F]{6}$/.test(färg)) return await inställningsSida(env, s, url, "Färgen ska vara #RRGGBB.", 400);
   const accepts = DELAR.filter((d) => flera(f, "accepts").includes(d));
   if (!accepts.length) return await inställningsSida(env, s, url, "Välj minst en del att ta emot.", 400);
+  const KVOTFÄLT = [
+    ["quota_ai_requests_day", "AI-anrop per dygn"],
+    ["quota_ai_tokens_30d", "AI-tokens per 30 dagar"],
+    ["quota_storage_mb", "Lagring"],
+    ["ai_budget_tokens_30d", "AI-budgeten"],
+  ] as const;
+  const kvoter = new Map<string, number | null>();
+  for (const [namn, text] of KVOTFÄLT) {
+    const v = fält(f, namn);
+    const n = heltal(v);
+    if (v !== "" && n === null) return await inställningsSida(env, s, url, `${text} ska vara ett heltal (0 eller mer), eller tomt.`, 400);
+    kvoter.set(namn, n);
+  }
 
   const ikon = f.get("icon") as unknown;
   let ikonbytes: Uint8Array | null = null;
@@ -1034,6 +1210,7 @@ async function sparaInställningar(req: Request, env: Env, s: Inställningar): P
   await sättInställning(env.DB, "chat_provider", fält(f, "chat_provider") || null);
   await sättInställning(env.DB, "chat_model", fält(f, "chat_model") || null);
   await sättInställning(env.DB, "chat_system", fält(f, "chat_system") || null);
+  for (const [namn, n] of kvoter) await sättInställning(env.DB, namn, n === null ? null : String(n));
   if (ikonbytes) {
     await env.FILER.put(IKON_NYCKEL, ikonbytes, { httpMetadata: { contentType: "image/png" } });
     await sättInställning(env.DB, "icon", nu());
@@ -1041,5 +1218,47 @@ async function sparaInställningar(req: Request, env: Env, s: Inställningar): P
     await env.FILER.delete(IKON_NYCKEL);
     await sättInställning(env.DB, "icon", null);
   }
+  const visa = (n: number | null | undefined) => (n === null || n === undefined ? "obegränsat" : tal(n));
+  await revisionslogg(
+    env,
+    req,
+    "installningar.andrade",
+    `Namn ${namn}, tar emot ${accepts.join(", ")}${ikonbytes ? ", ny logga" : f.has("remove_icon") ? ", loggan borttagen" : ""}; kvoter ${visa(
+      kvoter.get("quota_ai_requests_day"),
+    )} anrop/dygn, ${visa(kvoter.get("quota_ai_tokens_30d"))} tokens/30 d, ${visa(kvoter.get("quota_storage_mb"))} MB; AI-budget ${visa(
+      kvoter.get("ai_budget_tokens_30d"),
+    )}`,
+  );
   return medMeddelande("/admin/installningar", "Sparat.");
+}
+
+// ---------- Logg ----------
+
+async function loggSida(env: Env, s: Inställningar, url: URL): Promise<Response> {
+  const rader = await senasteLogg(env.DB, 200);
+  const dagar = new Map<string, typeof rader>();
+  for (const r of rader) {
+    const dag = dagnyckel(r.at);
+    dagar.set(dag, [...(dagar.get(dag) ?? []), r]);
+  }
+  const vem = (aktör: string) => (aktör === "ägaren" ? "Ägaren" : aktör === "okänd" ? "Okänd" : aktör);
+  const rad = (r: (typeof rader)[number]) => html`<div class="nyckelrad">
+    <div class="radtext">
+      <div class="radtopp"><span class="namn">${HÄNDELSER[r.event as keyof typeof HÄNDELSER] ?? r.event}</span><time>${klocka(r.at)}</time></div>
+      ${r.detail ? html`<div class="meta">${r.detail}</div>` : ""}
+      <div class="meta">${[vem(r.actor), r.ip, r.ua].filter(Boolean).join(" · ")}</div>
+    </div>
+  </div>`;
+  return htmlSvar(
+    sida(
+      s,
+      "Logg",
+      html`${rubrik("Logg", `Inloggningar, nycklar, kopplingar och ändringar. De senaste 200 händelserna; rader äldre än ${SPARA_DAGAR} dagar tas bort.`)}
+        ${meddelande(url)}
+        ${rader.length
+          ? [...dagar].map(([dag, rr]) => html`<h2 class="dag">${dagnamn(dag)}</h2><div class="lista">${rr.map(rad)}</div>`)
+          : tomt("Inget har hänt än.")}`,
+      "/admin/logg",
+    ),
+  );
 }
